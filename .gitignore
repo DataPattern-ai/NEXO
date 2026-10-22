@@ -18,10 +18,41 @@ frontend/dist/
 dist/
 .vite/
 
-# Environment files
+# Environment, secrets & credential files
 .env
-.env.local
-.env.*.local
+.env*
+*.env
+*.env.*
+**/.env
+**/.env*
+**/*.env
+**/*.env.*
+.secrets*
+.credentials*
+
+# Secret keys, certificates, & cloud credentials
+*.pem
+*.key
+*.pkcs12
+*.p12
+*.pfx
+*.cert
+*.crt
+*service_account*.json
+*service-account*.json
+*client_secret*.json
+*credential*.json
+*credentials*.json
+*gcp-key*.json
+*firebase*.json
+tokens.json
+auth.json
+*.token
+
+# Agent skill files installed by the Neon integration
+.agents/
+.claude/skills/
+skills-lock.json
 
 # IDE & OS
 .vscode/
@@ -29,12 +60,6 @@ dist/
 .DS_Store
 Thumbs.db
 .vercel
-.env*
-
-# Agent skill files installed by the Neon integration
-.agents/
-.claude/skills/
-skills-lock.json
 
 # User uploaded media files
 backend/media/
