@@ -179,6 +179,8 @@ class IssueViewSet(viewsets.ModelViewSet):
             qs = qs.filter(title__icontains=params["q"].strip())
         if params.get("label"):
             qs = qs.filter(labels__id=params["label"])
+        if values("workstream"):
+            qs = qs.filter(workstream__in=values("workstream"))
         return qs
 
     def get_serializer_class(self):

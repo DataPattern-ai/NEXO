@@ -85,9 +85,10 @@ def extract_signals_from_parsed_doc(
     signals = []
 
     # Helper to push a signal with defaults
-    def add_signal(category, title, desc="", severity="MEDIUM", status="ACTIVE", location="", date_val=None, conf=0.85):
-        if not title or len(title.strip()) < 5:
+    def add_signal(category, title, desc="", severity="MEDIUM", status="ACTIVE", location="", date_val=None, target_date=None, conf=0.85):
+        if not title or len(title.strip()) < 4:
             return
+        effective_date = target_date or date_val
         signals.append({
             "category": category,
             "title": title.strip()[:290],
@@ -95,12 +96,16 @@ def extract_signals_from_parsed_doc(
             "severity": severity,
             "status": status,
             "source_location": location or doc_title,
-            "target_date": date_val,
+            "target_date": effective_date,
             "confidence": conf,
         })
 
-    # Route based on document type
-    if doc_type == "STATUS":
+
+    # If rich structured excel metadata is present, extract directly with maximum fidelity
+    s_excel = parsed.metadata.get("structured_excel")
+    if s_excel:
+        _extract_from_structured_excel(s_excel, doc_title, add_signal)
+    elif doc_type == "STATUS":
         _extract_status_report(parsed, doc_title, add_signal)
     elif doc_type == "TIMELINE":
         _extract_timeline_plan(parsed, doc_title, add_signal)
@@ -118,7 +123,114 @@ def extract_signals_from_parsed_doc(
         # Custom or generic document: look for general headings
         _extract_generic_doc(parsed, doc_title, add_signal)
 
-    return signals
+    # Intra-document deduplication: prevent duplicate signals within this document
+    deduped_signals = []
+    seen = set()
+    for s in signals:
+        key = (s["category"], " ".join(s["title"].split()).lower())
+        if key not in seen:
+            seen.add(key)
+            deduped_signals.append(s)
+
+    return deduped_signals
+
+
+def _extract_from_structured_excel(s_excel: Dict[str, Any], doc_title: str, add_signal):
+    """
+    Extracts high-fidelity signals from structured Excel data:
+    - Phases and progress
+    - Milestones and target dates
+    - Risks and Blockers with severity
+    - Technical and schedule dependencies
+    - Team resource allocations
+    - Key status updates
+    """
+    # 1. Phases
+    for p in s_excel.get("phases", []):
+        p_name = p.get("name")
+        if p_name and len(p_name) >= 3:
+            add_signal(
+                category="PHASE",
+                title=p_name,
+                desc=f"Progress: {p.get('percent', 0)}% ({p.get('done', 0)}/{p.get('total', 0)} tasks complete)",
+                status=p.get("status", "ACTIVE"),
+                location=f"{doc_title} (Phase)",
+                conf=0.95,
+            )
+
+    # 2. Milestones
+    for m in s_excel.get("milestones", []):
+        m_title = m.get("title")
+        if m_title and len(m_title) >= 3:
+            w_stream = m.get("workstream", "General")
+            owner = m.get("owner", "Unassigned")
+            add_signal(
+                category="MILESTONE",
+                title=m_title,
+                desc=f"Workstream: {w_stream} | Owner: {owner}",
+                status=m.get("status", "ACTIVE"),
+                target_date=m.get("target_date"),
+                location=m.get("source_location", doc_title),
+                conf=0.92,
+            )
+
+    # 3. Risks & Blockers
+    for r in s_excel.get("risks", []):
+        r_title = r.get("title")
+        if r_title and len(r_title) >= 4:
+            cat = r.get("type", "RISK")
+            sev = r.get("severity", "MEDIUM")
+            owner = r.get("owner", "")
+            desc = r.get("description", "") or (f"Owner: {owner}" if owner else "")
+            add_signal(
+                category=cat,
+                title=r_title,
+                desc=desc,
+                severity=sev,
+                status=r.get("status", "ACTIVE"),
+                location=r.get("source_location", doc_title),
+                conf=0.92,
+            )
+
+    # 4. Dependencies
+    for d in s_excel.get("dependencies", []):
+        d_title = d.get("title")
+        if d_title and len(d_title) >= 4:
+            add_signal(
+                category="DEPENDENCY",
+                title=d_title,
+                severity="HIGH",
+                status="ACTIVE",
+                location=d.get("source_location", doc_title),
+                conf=0.90,
+            )
+
+    # 5. Team Allocations (top members)
+    for tm in s_excel.get("team_members", [])[:8]:
+        name = tm.get("name")
+        if name and len(name) >= 2:
+            tasks_sample = ", ".join(tm.get("tasks", [])[:4])
+            add_signal(
+                category="RESOURCE_NOTE",
+                title=f"{name}: {tm.get('total', 0)} assigned task(s)",
+                desc=f"Completed: {tm.get('done', 0)}, Tasks: {tasks_sample}",
+                location=f"{doc_title} (Resource Allocation)",
+                conf=0.88,
+            )
+
+    # 6. Completed / In Progress Updates (sample of delivered work items)
+    tasks = s_excel.get("tasks", [])
+    completed_tasks = [t for t in tasks if t.get("status") == "COMPLETED"][:6]
+    for ct in completed_tasks:
+        add_signal(
+            category="UPDATE",
+            title=f"Completed: {ct['title']}",
+            desc=f"Phase: {ct.get('phase', 'General')} | Owner: {ct.get('assignee', 'Unassigned')}",
+            status="COMPLETED",
+            location=ct.get("source_location", doc_title),
+            conf=0.85,
+        )
+
 
 
 def _extract_status_report(parsed: ParsedDocument, doc_title: str, add_signal):

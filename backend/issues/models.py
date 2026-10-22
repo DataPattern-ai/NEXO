@@ -36,8 +36,9 @@ class Issue(models.Model):
     description = models.TextField(blank=True)
 
     issue_type = models.CharField(max_length=10, choices=IssueType.choices, default=IssueType.TASK)
-    status = models.CharField(max_length=15, choices=Status.choices, default=Status.TODO)
+    status = models.CharField(max_length=50, default="TODO")
     priority = models.CharField(max_length=10, choices=Priority.choices, default=Priority.MEDIUM)
+    workstream = models.CharField(max_length=150, blank=True, default="", help_text="Workstream or module name")
 
     reporter = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="reported_issues"

@@ -67,7 +67,9 @@ export default function Login() {
       const msg =
         err?.response?.data?.non_field_errors?.[0] ||
         err?.response?.data?.detail ||
-        "Invalid email or password. Please check your credentials.";
+        (!err?.response
+          ? "Cannot connect to the NEXO backend server. Please verify that the backend server is running on port 8000."
+          : "Invalid email or password. Please check your credentials.");
       setError(msg);
     } finally {
       setLoading(false);

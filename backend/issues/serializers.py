@@ -76,7 +76,7 @@ class IssueSerializer(serializers.ModelSerializer):
         model = Issue
         fields = [
             "id", "project", "parent", "parent_title", "title", "description", "issue_type",
-            "status", "priority", "reporter", "reporter_id", "assignee", "assignee_id",
+            "status", "priority", "workstream", "reporter", "reporter_id", "assignee", "assignee_id",
             "labels", "label_ids", "comments", "activity_log", "resolution", "subtasks",
             "figma_url", "github_pr", "due_date", "attachments",
             "sprint_id", "sprint_name",
@@ -103,7 +103,7 @@ class IssueListSerializer(serializers.ModelSerializer):
         model = Issue
         fields = [
             "id", "project", "project_key", "project_name", "parent", "parent_title", "title", "description",
-            "issue_type", "status", "priority", "reporter", "assignee", "labels",
+            "issue_type", "status", "priority", "workstream", "reporter", "assignee", "labels",
             "resolution", "subtasks_count", "figma_url", "github_pr", "due_date",
             "sprint_id", "sprint_name",
             "created_at", "updated_at"

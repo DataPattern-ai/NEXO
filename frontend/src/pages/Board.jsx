@@ -18,6 +18,8 @@ import CreateIssueModal from "../components/CreateIssueModal";
 import ShareProjectModal from "../components/ShareProjectModal";
 import AutomationModal from "../components/AutomationModal";
 import ExportViewModal from "../components/ExportViewModal";
+import ImportReconciliationModal from "../components/ImportReconciliationModal";
+import FloatingAIAssistant from "../components/FloatingAIAssistant";
 
 const FALLBACK_COLUMNS = [
   { key: "TODO",        label: "TO DO",       color: "#42526E" },
@@ -49,6 +51,8 @@ export default function Board() {
   const [quickTitle, setQuickTitle] = useState("");
   const [allProjects, setAllProjects] = useState([]);
   const [showMoreProjectMenu, setShowMoreProjectMenu] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [unimportedDeliverablesCount, setUnimportedDeliverablesCount] = useState(0);
 
   function loadProjectData() {
     api.get(`/projects/${projectId}/`)
@@ -60,6 +64,12 @@ export default function Board() {
 
     api.get("/projects/")
       .then((res) => setAllProjects(res.data))
+      .catch(() => {});
+
+    api.get(`/projects/${projectId}/import_preview/`)
+      .then((res) => {
+        setUnimportedDeliverablesCount((res.data.new_count || 0) + (res.data.updated_count || 0));
+      })
       .catch(() => {});
   }
 
@@ -228,6 +238,38 @@ export default function Board() {
 
             {/* Right Action Icons — role-gated */}
             <div className="jira-project-actions-right">
+              {/* Import / Sync from Docs button */}
+              <button
+                className="jira-btn-secondary"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  height: 32,
+                  padding: "0 10px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "#0052CC",
+                  borderColor: "#B3D4FF",
+                  background: "#F4F8FD",
+                }}
+                onClick={() => setShowImportModal(true)}
+                title="Review and sync deliverables from project documents"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <line x1="16" y1="17" x2="8" y2="17"/>
+                </svg>
+                <span>Import Docs</span>
+                {unimportedDeliverablesCount > 0 && (
+                  <span style={{ background: "#0052CC", color: "#FFF", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 700 }}>
+                    {unimportedDeliverablesCount}
+                  </span>
+                )}
+              </button>
+
               {/* Share — adds members, so only those who can manage members */}
               {can(ACTIONS.ADD_REMOVE_MEMBERS) && (
                 <button className="jira-btn-action-icon" title="Share project" onClick={() => setShowShareModal(true)}>
@@ -267,6 +309,46 @@ export default function Board() {
               </button>
             </div>
           </div>
+
+          {/* Unimported Document Deliverables Banner */}
+          {unimportedDeliverablesCount > 0 && (
+            <div
+              style={{
+                margin: "14px 0 8px 0",
+                padding: "10px 16px",
+                background: "#DEEBFF",
+                border: "1px solid #B3D4FF",
+                borderRadius: 6,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 18 }}>📄</span>
+                <span style={{ fontSize: 13, color: "#0747A6" }}>
+                  <strong>{unimportedDeliverablesCount} Document Deliverables Detected</strong> — Uploaded project workbooks contain deliverables ready to be synchronized into your operational tracker.
+                </span>
+              </div>
+              <button
+                onClick={() => setShowImportModal(true)}
+                style={{
+                  padding: "5px 12px",
+                  background: "#0052CC",
+                  color: "#FFFFFF",
+                  border: "none",
+                  borderRadius: 4,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Review & Import Deliverables →
+              </button>
+            </div>
+          )}
 
           {/* Project View Tabs Bar */}
           <div className="jira-tabs-bar">
@@ -618,6 +700,30 @@ export default function Board() {
           onSelectTab={(tab) => setActiveTab(tab)}
         />
       )}
+
+      {/* Document-to-Tracker Reconciliation Modal */}
+      <ImportReconciliationModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        projectId={projectId}
+        projectName={projectName}
+        projectKey={projectKey}
+        onImportComplete={() => {
+          loadIssues();
+          loadProjectData();
+        }}
+      />
+
+      {/* Floating AI Project Assistant */}
+      <FloatingAIAssistant
+        projectId={projectId}
+        projectName={projectName}
+        projectKey={projectKey}
+        onActionExecuted={() => {
+          loadIssues();
+          loadProjectData();
+        }}
+      />
     </div>
   );
 }

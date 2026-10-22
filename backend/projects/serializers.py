@@ -30,15 +30,16 @@ class ProjectDocSerializer(serializers.ModelSerializer):
     created_by = UserSerializer(read_only=True)
     file_url = serializers.SerializerMethodField()
     signals_count = serializers.SerializerMethodField()
+    audit_manifest = serializers.SerializerMethodField()
 
     class Meta:
         model = ProjectDoc
         fields = [
             "id", "project", "title", "content", "template_type",
-            "file", "file_type", "file_size", "file_url", "signals_count",
-            "created_by", "created_at", "updated_at",
+            "file", "file_type", "file_size", "file_hash", "version", "file_url", "signals_count",
+            "audit_manifest", "created_by", "created_at", "updated_at",
         ]
-        read_only_fields = ["created_by", "file_size", "file_type"]
+        read_only_fields = ["created_by", "file_size", "file_type", "file_hash", "version"]
 
     def get_file_url(self, obj):
         request = self.context.get("request")
@@ -50,6 +51,28 @@ class ProjectDocSerializer(serializers.ModelSerializer):
 
     def get_signals_count(self, obj):
         return obj.signals.count()
+
+    def get_audit_manifest(self, obj):
+        file_obj = obj.file if obj.file else obj.content
+        filename = obj.file.name if obj.file else f"{obj.title}.md"
+        if file_obj:
+            try:
+                from .intelligence.parsers import parse_uploaded_file
+                from .intelligence.ai_provider import ai_classify_document
+                parsed = parse_uploaded_file(file_obj, filename)
+                manifest = parsed.metadata.get("audit_manifest") or {}
+                if "ai_understanding" not in manifest:
+                    ai_c = ai_classify_document(obj.title, parsed.raw_text[:2500], parsed.file_type)
+                    manifest["ai_understanding"] = {
+                        "purpose": ai_c.get("purpose"),
+                        "reasoning": ai_c.get("reasoning"),
+                        "confidence": ai_c.get("confidence"),
+                        "telemetry": ai_c.get("ai_telemetry"),
+                    }
+                return manifest
+            except Exception:
+                pass
+        return None
 
 
 class AutomationRuleSerializer(serializers.ModelSerializer):
@@ -150,7 +173,7 @@ class ProjectIntelligenceSummarySerializer(serializers.ModelSerializer):
         model = ProjectIntelligenceSummary
         fields = [
             "id", "project", "health_status", "health_rationale",
-            "current_phase", "executive_summary", "signals_count", "last_synced_at",
+            "current_phase", "executive_summary", "signals_count", "normalized_state", "last_synced_at",
         ]
 
 

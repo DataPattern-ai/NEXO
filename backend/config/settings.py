@@ -230,3 +230,25 @@ else:
     DEFAULT_FROM_EMAIL = 'Jira Software <noreply@jira-software.local>'
 
 
+# AI & PMO Intelligence Configuration
+AI_PROVIDER = os.getenv('AI_PROVIDER', 'auto')
+AI_TIMEOUT = int(os.getenv('AI_TIMEOUT', '30'))
+
+# Databricks Model Serving & AI Gateway (OpenAI-Compatible REST API)
+DATABRICKS_HOST = os.getenv('DATABRICKS_HOST', '')
+DATABRICKS_TOKEN = os.getenv('DATABRICKS_TOKEN', os.getenv('DATABRICKS_API_KEY', ''))
+DATABRICKS_MODEL = os.getenv('DATABRICKS_MODEL', os.getenv('DATABRICKS_SERVING_ENDPOINT', os.getenv('DATABRICKS_ENDPOINT_NAME', 'system.ai.meta-llama-3-3-70b-instruct')))
+DATABRICKS_SERVING_ENDPOINT = os.getenv('DATABRICKS_SERVING_ENDPOINT', os.getenv('DATABRICKS_ENDPOINT_NAME', ''))
+DATABRICKS_ENDPOINT_URL = os.getenv('DATABRICKS_ENDPOINT_URL', '')
+DATABRICKS_API_TYPE = os.getenv('DATABRICKS_API_TYPE', 'auto')
+
+# Alternate LLM Providers
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+GUARDIAN_LLM_API_KEY = os.getenv('GUARDIAN_LLM_API_KEY', '')
+GUARDIAN_LLM_BASE_URL = os.getenv('GUARDIAN_LLM_BASE_URL', '')
+GUARDIAN_LLM_MODEL = os.getenv('GUARDIAN_LLM_MODEL', 'gemini-2.5-flash')
+AI_BASE_URL = os.getenv('AI_BASE_URL', '')
+AI_MODEL = os.getenv('AI_MODEL', '')
+
+

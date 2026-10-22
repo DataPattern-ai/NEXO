@@ -107,6 +107,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
     }
     return {
       work: true,
+      workstream: true,
       assignee: true,
       reporter: true,
       priority: true,
@@ -478,6 +479,16 @@ export default function ListView({ project, issues = [], members = [], onRefresh
     groupedSections.push({ title: "To Do", items: filteredIssues.filter((i) => i.status === "TODO") });
     groupedSections.push({ title: "In Progress", items: filteredIssues.filter((i) => i.status === "IN_PROGRESS") });
     groupedSections.push({ title: "Done", items: filteredIssues.filter((i) => i.status === "DONE") });
+  } else if (groupBy === "WORKSTREAM") {
+    const wsMap = {};
+    filteredIssues.forEach((i) => {
+      const ws = i.workstream || "General";
+      if (!wsMap[ws]) wsMap[ws] = [];
+      wsMap[ws].push(i);
+    });
+    Object.keys(wsMap).sort().forEach((ws) => {
+      groupedSections.push({ title: ws, items: wsMap[ws] });
+    });
   } else {
     groupedSections.push({ title: "All Work Items", items: filteredIssues });
   }
@@ -658,6 +669,15 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                 >
                   Group by Status
                 </button>
+                <button
+                  className={`jira-popover-item-btn ${groupBy === "WORKSTREAM" ? "active" : ""}`}
+                  onClick={() => {
+                    setGroupBy("WORKSTREAM");
+                    setShowGroupMenu(false);
+                  }}
+                >
+                  Group by Workstream
+                </button>
               </div>
             )}
           </div>
@@ -764,6 +784,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                   />
                 </th>
                 {columns.work && <th className="th-work" style={{ minWidth: 320 }}>Work</th>}
+                {columns.workstream && <th style={{ width: 140 }}>Workstream</th>}
                 {columns.assignee && <th style={{ width: 160 }}>Assignee</th>}
                 {columns.reporter && <th style={{ width: 180 }}>Reporter</th>}
                 {columns.priority && <th style={{ width: 120 }}>Priority</th>}
@@ -791,6 +812,10 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                       <div className="jira-nav-popover" style={{ right: 0, left: "auto", width: 200, padding: "10px 14px" }}>
                         <span className="jira-field-label" style={{ marginBottom: 8, display: "block" }}>VISIBLE COLUMNS</span>
                         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                            <input type="checkbox" checked={columns.workstream} onChange={() => toggleColumn("workstream")} />
+                            Workstream
+                          </label>
                           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
                             <input type="checkbox" checked={columns.dueDate} onChange={() => toggleColumn("dueDate")} />
                             Due Date
@@ -883,6 +908,15 @@ export default function ListView({ project, issues = [], members = [], onRefresh
 
                               <span className="jira-issue-title">{issue.title}</span>
                             </div>
+                          </td>
+                        )}
+
+                        {/* Workstream column */}
+                        {columns.workstream && (
+                          <td>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: "#42526E", background: "#EBECF0", padding: "2px 8px", borderRadius: 4 }}>
+                              {issue.workstream || "General"}
+                            </span>
                           </td>
                         )}
 

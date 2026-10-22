@@ -692,28 +692,151 @@ class DashboardView(APIView):
             key = issue.status if issue.status in grouped_statuses else "TODO"
             grouped_statuses[key].append(issue_brief(issue))
 
-        # ── 2. My projects with open/done counts ──
+        # ── 2. Leadership Portfolio & Projects Summary ──
         projects = Project.objects.filter(
             visible_projects_q(user)
         ).distinct().prefetch_related("issues").select_related("intelligence_summary")
 
         my_projects = []
+        cross_project_progress = []
+        projects_requiring_attention = []
+        all_portfolio_milestones = []
+        all_portfolio_risks = []
+
+        total_projects_count = projects.count()
+        health_counts = {"ON_TRACK": 0, "AT_RISK": 0, "CRITICAL": 0}
+        total_completion_sum = 0
+        total_docs_count = 0
+
         for p in projects:
             all_issues = p.issues.all()
             intel_sum = getattr(p, "intelligence_summary", None)
-            health_stat = intel_sum.health_status if intel_sum else "ON_TRACK"
-            curr_phase = intel_sum.current_phase if intel_sum else ""
-            my_projects.append({
+
+            if not intel_sum or not intel_sum.normalized_state:
+                try:
+                    from projects.intelligence.synthesizer import generate_project_intelligence
+                    intel_data = generate_project_intelligence(p)
+                    intel_sum = getattr(p, "intelligence_summary", None)
+                    norm_state = intel_data.get("normalized_state", {})
+                except Exception:
+                    norm_state = {}
+            else:
+                norm_state = intel_sum.normalized_state or {}
+
+            health_stat = norm_state.get("health", {}).get("status") or (intel_sum.health_status if intel_sum else "ON_TRACK")
+            health_label = norm_state.get("health", {}).get("label") or health_stat.replace("_", " ").title()
+            health_rationale = norm_state.get("health", {}).get("rationale") or (intel_sum.health_rationale if intel_sum else "")
+            curr_phase = norm_state.get("current_phase") or (intel_sum.current_phase if intel_sum else "")
+
+            prog = norm_state.get("progress", {})
+            completion_pct = prog.get("percent")
+            if completion_pct is None:
+                t_count = all_issues.count()
+                d_count = all_issues.filter(status="DONE").count()
+                completion_pct = round((d_count / t_count) * 100) if t_count else 0
+                prog_source = "Issues"
+                total_items = t_count
+                done_items = d_count
+            else:
+                prog_source = prog.get("source", "Project Deliverables")
+                total_items = prog.get("total_items", all_issues.count())
+                done_items = prog.get("done_items", all_issues.filter(status="DONE").count())
+
+            doc_count = p.docs.count()
+            total_docs_count += doc_count
+            total_completion_sum += completion_pct
+
+            if health_stat in health_counts:
+                health_counts[health_stat] += 1
+            else:
+                health_counts["ON_TRACK"] += 1
+
+            project_item = {
                 "id": p.id,
                 "name": p.name,
                 "key": p.key,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "created_by": p.created_by.username if p.created_by else "Admin",
                 "total": all_issues.count(),
                 "open": all_issues.filter(status__in=["TODO", "IN_PROGRESS"]).count(),
                 "done": all_issues.filter(status="DONE").count(),
                 "my_role": effective_project_role(user, p),
                 "health_status": health_stat,
+                "health_label": health_label,
+                "health_rationale": health_rationale,
                 "current_phase": curr_phase,
-            })
+                "completion_percent": completion_pct,
+                "progress_source": prog_source,
+                "total_items": total_items,
+                "done_items": done_items,
+                "documents_count": doc_count,
+            }
+            my_projects.append(project_item)
+            cross_project_progress.append(project_item)
+
+            proj_milestones = norm_state.get("milestones", [])
+            for m in proj_milestones:
+                all_portfolio_milestones.append({
+                    "project_id": p.id,
+                    "project_name": p.name,
+                    "project_key": p.key,
+                    "title": m.get("title"),
+                    "target_date": m.get("target_date"),
+                    "status": m.get("status"),
+                    "days_away": m.get("days_away"),
+                    "extension_days": m.get("extension_days", 0),
+                    "source": m.get("source"),
+                    "source_location": m.get("source_location"),
+                })
+
+            proj_risks = norm_state.get("risks_and_blockers", [])
+            active_risks_for_p = [r for r in proj_risks if r.get("status", "ACTIVE") == "ACTIVE"]
+            for r in active_risks_for_p:
+                all_portfolio_risks.append({
+                    "project_id": p.id,
+                    "project_name": p.name,
+                    "project_key": p.key,
+                    "title": r.get("title"),
+                    "type": r.get("type", "RISK"),
+                    "severity": r.get("severity", "MEDIUM"),
+                    "source_type": r.get("source_type"),
+                    "source_title": r.get("source_title"),
+                })
+
+            has_high_risk = any(r.get("severity") in ["HIGH", "CRITICAL"] for r in active_risks_for_p)
+            has_delays = any(m.get("status") == "DELAYED" or (m.get("extension_days") or 0) > 0 for m in proj_milestones)
+            if health_stat in ["AT_RISK", "CRITICAL"] or has_high_risk or has_delays:
+                projects_requiring_attention.append({
+                    "id": p.id,
+                    "name": p.name,
+                    "key": p.key,
+                    "health_status": health_stat,
+                    "health_label": health_label,
+                    "health_rationale": health_rationale,
+                    "completion_percent": completion_pct,
+                    "progress_source": prog_source,
+                    "active_risks_count": len(active_risks_for_p),
+                    "high_risks_count": len([r for r in active_risks_for_p if r.get("severity") in ["HIGH", "CRITICAL"]]),
+                    "delayed_milestones_count": len([m for m in proj_milestones if m.get("status") == "DELAYED" or (m.get("extension_days") or 0) > 0]),
+                })
+
+        avg_completion = round(total_completion_sum / total_projects_count) if total_projects_count else 0
+
+        portfolio_health_summary = {
+            "total_projects": total_projects_count,
+            "on_track_count": health_counts["ON_TRACK"],
+            "at_risk_count": health_counts["AT_RISK"],
+            "critical_count": health_counts["CRITICAL"],
+            "average_completion_pct": avg_completion,
+            "total_documents": total_docs_count,
+            "total_active_risks": len(all_portfolio_risks),
+        }
+
+        all_portfolio_milestones.sort(
+            key=lambda x: (x.get("days_away") is None, x.get("days_away") if x.get("days_away") is not None else 9999)
+        )
+        severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+        all_portfolio_risks.sort(key=lambda x: severity_order.get(x.get("severity", "MEDIUM"), 2))
 
         # ── 3. Active sprint progress ──
         active_sprints = Sprint.objects.filter(
@@ -770,7 +893,90 @@ class DashboardView(APIView):
                 "created_at": a.created_at.isoformat(),
             })
 
-        # ── 6. Unread notifications ──
+        # ── 6. Recent portfolio updates (cross-project delivered work, decisions, asset uploads, & activity) ──
+        recent_portfolio_updates = []
+
+        for p in projects:
+            intel_sum = getattr(p, "intelligence_summary", None)
+            norm_state = intel_sum.normalized_state if intel_sum and intel_sum.normalized_state else {}
+            recent_ups = norm_state.get("recent_updates", {})
+            for cw in recent_ups.get("completed_work", []):
+                recent_portfolio_updates.append({
+                    "id": f"cw-{p.key}-{cw.get('id')}",
+                    "type": "DELIVERABLE",
+                    "project_id": p.id,
+                    "project_name": p.name,
+                    "project_key": p.key,
+                    "title": cw.get("title"),
+                    "owner": cw.get("owner"),
+                    "source": cw.get("source", "Deliverable"),
+                    "timestamp": cw.get("updated_at"),
+                    "badge": "Delivered",
+                    "badge_color": "#00875A",
+                })
+            if not recent_ups.get("completed_work"):
+                for d in norm_state.get("deliverables", []):
+                    if d.get("status") == "COMPLETED":
+                        recent_portfolio_updates.append({
+                            "id": f"deliv-{p.key}-{d.get('row', 0)}",
+                            "type": "DELIVERABLE",
+                            "project_id": p.id,
+                            "project_name": p.name,
+                            "project_key": p.key,
+                            "title": f"Milestone deliverable delivered: '{d.get('title')}'",
+                            "owner": d.get("owner"),
+                            "source": "Timeline Plan",
+                            "timestamp": d.get("end_date"),
+                            "badge": "Delivered",
+                            "badge_color": "#00875A",
+                        })
+            for dec in recent_ups.get("decisions", []):
+                recent_portfolio_updates.append({
+                    "id": f"dec-{p.key}-{dec.get('title')}",
+                    "type": "DECISION",
+                    "project_id": p.id,
+                    "project_name": p.name,
+                    "project_key": p.key,
+                    "title": dec.get("title"),
+                    "source": dec.get("source", "Governance"),
+                    "timestamp": None,
+                    "badge": "Decision",
+                    "badge_color": "#403294",
+                })
+            for d in p.docs.all()[:3]:
+                recent_portfolio_updates.append({
+                    "id": f"doc-{p.key}-{d.id}",
+                    "type": "DOCUMENT",
+                    "project_id": p.id,
+                    "project_name": p.name,
+                    "project_key": p.key,
+                    "title": f"Project asset uploaded: '{d.title}' ({d.file_type or 'DOC'})",
+                    "source": d.template_type or "Documentation",
+                    "timestamp": d.created_at.isoformat() if d.created_at else None,
+                    "badge": "Asset Ingested",
+                    "badge_color": "#0747A6",
+                })
+
+        for a in activity[:8]:
+            recent_portfolio_updates.append({
+                "id": f"act-{a.id}",
+                "type": "ACTIVITY",
+                "project_id": a.issue.project.id,
+                "project_name": a.issue.project.name,
+                "project_key": a.issue.project.key,
+                "title": f"{a.actor.username if a.actor else 'Member'} updated {a.issue.project.key}-{a.issue.id} ({a.issue.title}): {a.field_changed} → {a.new_value}",
+                "source": "Task Event",
+                "timestamp": a.created_at.isoformat(),
+                "badge": "Activity",
+                "badge_color": "#0052CC",
+            })
+
+        recent_portfolio_updates.sort(
+            key=lambda x: (x.get("timestamp") is not None, x.get("timestamp") or ""),
+            reverse=True
+        )
+
+        # ── 7. Unread notifications ──
         unread_qs = Notification.objects.filter(
             recipient=user, read=False
         ).select_related("actor").order_by("-created_at")
@@ -789,6 +995,12 @@ class DashboardView(APIView):
         return Response({
             "assigned_by_status": grouped_statuses,
             "my_projects": my_projects,
+            "portfolio_health_summary": portfolio_health_summary,
+            "cross_project_progress": cross_project_progress,
+            "projects_requiring_attention": projects_requiring_attention,
+            "upcoming_overdue_milestones": all_portfolio_milestones[:10],
+            "aggregate_risks_blockers": all_portfolio_risks[:10],
+            "recent_portfolio_updates": recent_portfolio_updates[:12],
             "active_sprints": sprint_data,
             "issue_type_counts": type_counts,
             "recent_activity": activity_data,

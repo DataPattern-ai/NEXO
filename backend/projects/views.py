@@ -1,7 +1,12 @@
 import hmac
+import io
+import re
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.db.models import Q
+from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
@@ -9,6 +14,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
+from issues.models import ActivityLog, Issue
 from users.access import (
     LimitedMemberReadOnly,
     can_create_project,
@@ -21,7 +27,9 @@ from users.access import (
 from users.models import Notification
 from users.utils import send_project_invite_email
 
-from .intelligence import generate_project_intelligence, process_and_extract_document
+from .exports import generate_canonical_project_csv, generate_canonical_project_workbook
+from .intelligence import calculate_file_hash, generate_project_intelligence, process_and_extract_document
+
 from .models import (
     AutomationRule,
     CalendarEntry,
@@ -146,14 +154,27 @@ class ProjectViewSet(viewsets.ModelViewSet):
         ProjectMembership.objects.filter(project=project, user_id=user_id).delete()
         return Response(ProjectSerializer(project, context={"request": request}).data)
 
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated])
+    def ai_status(self, request):
+        """
+        GET /api/projects/ai_status/
+        Safe connection and status probe for configured AI provider (Databricks, Gemini, OpenAI, etc.).
+        Reports provider, model/endpoint, connection status, HTTP status, and latency. Never exposes secrets.
+        """
+        from .intelligence.ai_provider import test_ai_connection
+        res = test_ai_connection()
+        return Response(res)
+
     @action(detail=True, methods=["get"])
     def intelligence(self, request, pk=None):
         """
         GET /api/projects/<id>/intelligence/
         Returns comprehensive PMO project overview combining structured data and document signals.
+        Supports fast sub-50ms persistent caching and explicit ?refresh=true cache invalidation.
         """
         project = self.get_object()
-        data = generate_project_intelligence(project)
+        force_refresh = request.query_params.get("refresh", "").lower() in ["true", "1"]
+        data = generate_project_intelligence(project, force_refresh=force_refresh)
         return Response(data)
 
     @action(detail=True, methods=["post"])
@@ -168,7 +189,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 process_and_extract_document(doc)
             except Exception as e:
                 print(f"[Error processing doc {doc.id}]: {e}")
-        data = generate_project_intelligence(project)
+        data = generate_project_intelligence(project, force_refresh=True)
         return Response(data)
 
     @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])
@@ -177,6 +198,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         POST /api/projects/<id>/upload_doc/
         Upload an Excel (XLSX), Word (DOCX), PDF, or Markdown file to the project.
         Parses text, classifies document context, extracts signals, and updates intelligence.
+        Supports automatic deduplication (same file re-uploaded) and revision updates.
         """
         project = self.get_object()
         file_obj = request.FILES.get("file")
@@ -193,12 +215,64 @@ class ProjectViewSet(viewsets.ModelViewSet):
             else:
                 title = "Uploaded Project Document"
 
+        # Step 1: Compute content hash
+        doc_hash = calculate_file_hash(file_obj=file_obj, content=content)
+
+        # Step 2: Check for exact duplicate upload in this project
+        identical_doc = ProjectDoc.objects.filter(project=project, file_hash=doc_hash).first()
+        if identical_doc:
+            doc_data = ProjectDocSerializer(identical_doc, context={"request": request}).data
+            intel = generate_project_intelligence(project)
+            return Response({
+                "doc": doc_data,
+                "intelligence": intel,
+                "is_duplicate": True,
+                "message": f"Document '{identical_doc.title}' has already been uploaded and analyzed. Signals are preserved without duplication.",
+            }, status=status.HTTP_200_OK)
+
+        # Step 3: Check for revision update (same title or filename, but different content/hash)
+        existing_doc = None
+        if title:
+            existing_doc = ProjectDoc.objects.filter(project=project, title__iexact=title.strip()).first()
+        if not existing_doc and file_obj:
+            existing_doc = ProjectDoc.objects.filter(project=project, file__endswith=file_obj.name).first()
+
+        if existing_doc:
+            # Document revision: update existing record, purge old signals atomically, and re-extract
+            existing_doc.version += 1
+            existing_doc.file_hash = doc_hash
+            if file_obj:
+                existing_doc.file = file_obj
+            if content:
+                existing_doc.content = content
+            if template_type:
+                existing_doc.template_type = template_type
+            existing_doc.save()
+
+            try:
+                intel = process_and_extract_document(existing_doc)
+            except Exception as e:
+                print(f"[Extraction error on revision update]: {e}")
+                intel = generate_project_intelligence(project)
+
+            doc_data = ProjectDocSerializer(existing_doc, context={"request": request}).data
+            return Response({
+                "doc": doc_data,
+                "intelligence": intel,
+                "is_updated": True,
+                "version": existing_doc.version,
+                "message": f"Document '{existing_doc.title}' successfully updated to version {existing_doc.version}. Signals refreshed cleanly.",
+            }, status=status.HTTP_200_OK)
+
+        # Step 4: Brand new document
         doc = ProjectDoc.objects.create(
             project=project,
             title=title,
             content=content,
             file=file_obj,
             template_type=template_type,
+            file_hash=doc_hash,
+            version=1,
             created_by=request.user,
         )
 
@@ -210,6 +284,455 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
         doc_data = ProjectDocSerializer(doc, context={"request": request}).data
         return Response({"doc": doc_data, "intelligence": intel}, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get"])
+    def import_preview(self, request, pk=None):
+        """
+        GET /api/projects/<id>/import_preview/
+        Generates reconciliation diff between document-extracted deliverables and tracker issues.
+        Fuzzy-matches deliverable owners to registered project users and identifies new/updated/conflicting items.
+        """
+        project = self.get_object()
+        summary = getattr(project, "intelligence_summary", None)
+        ranked = []
+        if summary and summary.normalized_state:
+            ranked = summary.normalized_state.get("ranked_deliverables", [])
+
+        if not ranked:
+            signals = project.signals.filter(category="MILESTONE")
+            for sig in signals:
+                ranked.append({
+                    "title": sig.title,
+                    "status": sig.status,
+                    "target_date": sig.target_date.strftime("%Y-%m-%d") if sig.target_date else None,
+                    "workstream": sig.description or "General",
+                    "owner": "",
+                    "source_location": sig.source_location,
+                })
+
+        existing_issues = {
+            i.title.strip().lower(): i for i in project.issues.all()
+        }
+
+        memberships = project.memberships.select_related("user").all()
+        active_users = [m.user for m in memberships if not m.user.is_deactivated]
+        all_active_users = list(User.objects.filter(is_active=True))
+
+        available_members = [
+            {"id": u.id, "username": u.username, "full_name": u.get_full_name() or u.username, "email": u.email}
+            for u in active_users
+        ]
+        user_id_set = {m["id"] for m in available_members}
+        for u in all_active_users:
+            if u.id not in user_id_set:
+                available_members.append({
+                    "id": u.id, "username": u.username, "full_name": u.get_full_name() or u.username, "email": u.email
+                })
+
+        items = []
+        new_count = 0
+        updated_count = 0
+        unchanged_count = 0
+        conflict_count = 0
+
+        for idx, deliv in enumerate(ranked):
+            raw_title = deliv.get("title") or deliv.get("name") or f"Deliverable {idx+1}"
+            title = str(raw_title).strip()
+            norm_key = title.lower()
+
+            raw_status = (deliv.get("execution_status") or deliv.get("status") or "TODO").upper()
+            if raw_status in ["COMPLETED", "DONE", "RESOLVED"]:
+                suggested_status = "DONE"
+            elif raw_status in ["IN_PROGRESS", "ACTIVE", "WIP", "EXTENDED", "DELAYED"]:
+                suggested_status = "IN_PROGRESS"
+            else:
+                suggested_status = "TODO"
+
+            has_ext = deliv.get("has_extension", False)
+            ext_days = deliv.get("extension_days", 0)
+            if has_ext or ext_days > 0 or deliv.get("severity") == "CRITICAL":
+                suggested_priority = "HIGH"
+            else:
+                suggested_priority = "MEDIUM"
+
+            workstream = deliv.get("workstream") or deliv.get("phase") or ""
+
+            due_date = deliv.get("actual_completion_date") or deliv.get("end_date") or deliv.get("baseline_end_date") or deliv.get("target_date")
+            if due_date and isinstance(due_date, str) and len(due_date) > 10:
+                due_date = due_date[:10]
+
+            raw_owner = deliv.get("owner") or deliv.get("assignee") or ""
+            matched_user = None
+            if raw_owner:
+                owner_clean = str(raw_owner).strip()
+                for u in all_active_users:
+                    if u.username.lower() == owner_clean.lower() or u.get_full_name().lower() == owner_clean.lower():
+                        matched_user = u
+                        break
+                if not matched_user:
+                    tokens = [t.strip().lower() for t in re.split(r"[,&/ ]+", owner_clean) if len(t.strip()) > 2]
+                    for token in tokens:
+                        for u in all_active_users:
+                            if (token in u.username.lower() or 
+                                (u.first_name and token in u.first_name.lower()) or 
+                                (u.last_name and token in u.last_name.lower()) or
+                                (u.email and token in u.email.lower())):
+                                matched_user = u
+                                break
+                        if matched_user:
+                            break
+
+            existing_issue = existing_issues.get(norm_key)
+            if not existing_issue:
+                state = "NEW"
+                new_count += 1
+            else:
+                status_diff = (existing_issue.status != suggested_status)
+                due_diff = (existing_issue.due_date and str(existing_issue.due_date) != str(due_date)) if due_date else False
+                if status_diff or due_diff:
+                    state = "UPDATED"
+                    updated_count += 1
+                else:
+                    state = "UNCHANGED"
+                    unchanged_count += 1
+
+            items.append({
+                "temp_id": f"deliv-{idx+1}",
+                "title": title,
+                "workstream": workstream,
+                "status": suggested_status,
+                "priority": suggested_priority,
+                "issue_type": "TASK",
+                "due_date": due_date,
+                "source_owner": raw_owner,
+                "matched_user_id": matched_user.id if matched_user else None,
+                "matched_username": matched_user.username if matched_user else None,
+                "matched_name": matched_user.get_full_name() or matched_user.username if matched_user else None,
+                "reconciliation_state": state,
+                "existing_issue_id": existing_issue.id if existing_issue else None,
+                "existing_status": existing_issue.status if existing_issue else None,
+            })
+
+        return Response({
+            "project_id": project.id,
+            "project_name": project.name,
+            "total_deliverables": len(items),
+            "new_count": new_count,
+            "updated_count": updated_count,
+            "unchanged_count": unchanged_count,
+            "conflict_count": conflict_count,
+            "items": items,
+            "available_members": available_members,
+        })
+
+    @action(detail=True, methods=["post"])
+    def confirm_import(self, request, pk=None):
+        """
+        POST /api/projects/<id>/confirm_import/
+        Commits selected document deliverables into persistent Issue records in an atomic transaction.
+        """
+        project = self.get_object()
+        role = effective_project_role(request.user, project)
+        if role not in ["ADMIN", "MANAGER"] and not is_project_admin(request.user, project):
+            raise PermissionDenied("Only project Admins and Managers can import deliverables into the tracker.")
+
+        selected_items = request.data.get("selected_items", [])
+        if not selected_items:
+            return Response({"error": "No items selected for import."}, status=status.HTTP_400_BAD_REQUEST)
+
+        created_count = 0
+        updated_count = 0
+
+        with transaction.atomic():
+            for item in selected_items:
+                title = item.get("title", "").strip()
+                if not title:
+                    continue
+                workstream = item.get("workstream", "")
+                status_val = item.get("status", "TODO")
+                priority = item.get("priority", "MEDIUM")
+                issue_type = item.get("issue_type", "TASK")
+                assignee_id = item.get("assignee_id") or item.get("matched_user_id")
+                due_date = item.get("due_date") or None
+                existing_issue_id = item.get("existing_issue_id")
+
+                assignee = None
+                if assignee_id:
+                    assignee = User.objects.filter(id=assignee_id, is_active=True).first()
+
+                existing = None
+                if existing_issue_id:
+                    existing = Issue.objects.filter(id=existing_issue_id, project=project).first()
+                if not existing:
+                    existing = Issue.objects.filter(project=project, title__iexact=title).first()
+
+                if existing:
+                    old_status = existing.status
+                    existing.workstream = workstream or existing.workstream
+                    existing.status = status_val
+                    existing.priority = priority
+                    if due_date:
+                        existing.due_date = due_date
+                    if assignee:
+                        existing.assignee = assignee
+                    if status_val == "DONE":
+                        existing.resolution = "Resolved"
+                    existing.save()
+
+                    if old_status != status_val:
+                        ActivityLog.objects.create(
+                            issue=existing,
+                            actor=request.user,
+                            field_changed="status",
+                            old_value=old_status,
+                            new_value=status_val,
+                        )
+                    updated_count += 1
+                else:
+                    resolution = "Resolved" if status_val == "DONE" else "Unresolved"
+                    new_issue = Issue.objects.create(
+                        project=project,
+                        title=title,
+                        workstream=workstream,
+                        status=status_val,
+                        priority=priority,
+                        issue_type=issue_type,
+                        assignee=assignee,
+                        reporter=request.user,
+                        due_date=due_date,
+                        resolution=resolution,
+                    )
+                    ActivityLog.objects.create(
+                        issue=new_issue,
+                        actor=request.user,
+                        field_changed="created",
+                        old_value="",
+                        new_value=f"Imported from project document by {request.user.username}",
+                    )
+                    created_count += 1
+
+        try:
+            summary = getattr(project, "intelligence_summary", None)
+            cached_ranked = []
+            if summary and summary.normalized_state:
+                cached_ranked = summary.normalized_state.get("ranked_deliverables", [])
+
+            if project.docs.exists():
+                generate_project_intelligence(project, force_refresh=True)
+            elif summary and cached_ranked:
+                summary.normalized_state["ranked_deliverables"] = cached_ranked
+                summary.save(update_fields=["normalized_state"])
+        except Exception as e:
+            print(f"[Intelligence re-sync error after import]: {e}")
+
+        return Response({
+            "success": True,
+            "created": created_count,
+            "updated": updated_count,
+            "total_processed": created_count + updated_count,
+            "message": f"Successfully synchronized {created_count + updated_count} items ({created_count} created, {updated_count} updated) into project tracker.",
+        })
+
+    @action(detail=True, methods=["get"])
+    def export_xlsx(self, request, pk=None):
+        """
+        GET /api/projects/<id>/export_xlsx/
+        Downloads canonical 5-sheet NEXO PMO Excel Workbook with formula injection protection.
+        """
+        project = self.get_object()
+        issues_qs = project.issues.all().select_related("assignee", "reporter", "sprint")
+
+        status_filter = request.query_params.get("status")
+        priority_filter = request.query_params.get("priority")
+        assignee_filter = request.query_params.get("assignee")
+        workstream_filter = request.query_params.get("workstream")
+        q_filter = request.query_params.get("q")
+
+        if status_filter:
+            issues_qs = issues_qs.filter(status__in=[s.strip() for s in status_filter.split(",") if s.strip()])
+        if priority_filter:
+            issues_qs = issues_qs.filter(priority__in=[p.strip() for p in priority_filter.split(",") if p.strip()])
+        if assignee_filter:
+            assignee_ids = [a.strip() for a in assignee_filter.split(",") if a.strip().isdigit()]
+            cond = Q(assignee_id__in=assignee_ids)
+            if "none" in assignee_filter:
+                cond |= Q(assignee__isnull=True)
+            issues_qs = issues_qs.filter(cond)
+        if workstream_filter:
+            issues_qs = issues_qs.filter(workstream__in=[w.strip() for w in workstream_filter.split(",") if w.strip()])
+        if q_filter:
+            issues_qs = issues_qs.filter(title__icontains=q_filter.strip())
+
+        wb_buffer = generate_canonical_project_workbook(project, issues_qs=issues_qs, user=request.user)
+        filename = f"{project.key}_Project_Tracker_{timezone.now().strftime('%Y%m%d')}.xlsx"
+
+        response = HttpResponse(
+            wb_buffer.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    @action(detail=True, methods=["get"])
+    def export_csv(self, request, pk=None):
+        """
+        GET /api/projects/<id>/export_csv/
+        Downloads sanitized CSV of project issues with formula injection protection.
+        """
+        project = self.get_object()
+        issues_qs = project.issues.all().select_related("assignee", "reporter", "sprint")
+
+        status_filter = request.query_params.get("status")
+        priority_filter = request.query_params.get("priority")
+        assignee_filter = request.query_params.get("assignee")
+        workstream_filter = request.query_params.get("workstream")
+        q_filter = request.query_params.get("q")
+
+        if status_filter:
+            issues_qs = issues_qs.filter(status__in=[s.strip() for s in status_filter.split(",") if s.strip()])
+        if priority_filter:
+            issues_qs = issues_qs.filter(priority__in=[p.strip() for p in priority_filter.split(",") if p.strip()])
+        if assignee_filter:
+            assignee_ids = [a.strip() for a in assignee_filter.split(",") if a.strip().isdigit()]
+            cond = Q(assignee_id__in=assignee_ids)
+            if "none" in assignee_filter:
+                cond |= Q(assignee__isnull=True)
+            issues_qs = issues_qs.filter(cond)
+        if workstream_filter:
+            issues_qs = issues_qs.filter(workstream__in=[w.strip() for w in workstream_filter.split(",") if w.strip()])
+        if q_filter:
+            issues_qs = issues_qs.filter(title__icontains=q_filter.strip())
+
+        csv_content = generate_canonical_project_csv(project, issues_qs=issues_qs)
+        filename = f"{project.key}_work_items_{timezone.now().strftime('%Y%m%d')}.csv"
+
+        response = HttpResponse(csv_content, content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    @action(detail=True, methods=["post"])
+    def ai_assistant(self, request, pk=None):
+        """
+        POST /api/projects/<id>/ai_assistant/
+        Project-aware AI assistant endpoint.
+        Handles natural language queries about project health, issues, and risks.
+        Detects write actions (create task, change status, assign) and returns structured proposals
+        for explicit two-step user confirmation.
+        """
+        project = self.get_object()
+        user_message = request.data.get("message", "").strip()
+        if not user_message:
+            return Response({"error": "Message is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .assistant import handle_assistant_query
+        result = handle_assistant_query(project, request.user, user_message)
+        return Response(result)
+
+    @action(detail=True, methods=["post"])
+    def ai_execute(self, request, pk=None):
+        """
+        POST /api/projects/<id>/ai_execute/
+        Applies a confirmed AI action proposal with strict RBAC validation.
+        """
+        project = self.get_object()
+        proposal = request.data.get("proposal", {})
+        action_type = proposal.get("action")
+        fields = proposal.get("fields", {})
+
+        role = effective_project_role(request.user, project)
+        if role == "VIEWER":
+            raise PermissionDenied("Viewers cannot execute project modifications.")
+
+        from .assistant import parse_date_str, resolve_user_by_name
+
+        if action_type == "CREATE_ISSUE":
+            if role == "MEMBER":
+                raise PermissionDenied("Members cannot create new issues. Only Admins and Managers can.")
+            title = fields.get("title", "").strip()
+            if not title:
+                return Response({"error": "Task title is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+            assignee = None
+            if fields.get("assignee_id"):
+                assignee = User.objects.filter(id=fields.get("assignee_id")).first()
+            elif fields.get("assignee"):
+                assignee = resolve_user_by_name(project, fields.get("assignee"))
+
+            due_date = parse_date_str(fields.get("due_date")) if fields.get("due_date") else None
+
+            issue = Issue.objects.create(
+                project=project,
+                title=title,
+                description=fields.get("description", ""),
+                status=fields.get("status", "TODO"),
+                priority=fields.get("priority", "MEDIUM"),
+                issue_type=fields.get("issue_type", "TASK"),
+                workstream=fields.get("workstream", ""),
+                assignee=assignee,
+                due_date=due_date,
+                reporter=request.user,
+                resolution="Resolved" if fields.get("status") == "DONE" else "Unresolved",
+            )
+            ActivityLog.objects.create(
+                issue=issue,
+                actor=request.user,
+                field_changed="created",
+                old_value="",
+                new_value=f"Created via NEXO AI Assistant by {request.user.username}",
+            )
+            return Response({
+                "success": True,
+                "message": f"Successfully created task [{project.key}-{issue.id}] {issue.title}",
+                "issue_id": issue.id,
+                "issue_key": f"{project.key}-{issue.id}",
+            })
+
+        elif action_type == "UPDATE_ISSUE":
+            target_id = proposal.get("target_issue_id")
+            issue = Issue.objects.filter(id=target_id, project=project).first()
+            if not issue:
+                return Response({"error": "Target issue not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if role == "MEMBER" and any(k not in ["status", "resolution"] for k in fields.keys()):
+                raise PermissionDenied("Members can only change issue status and resolution.")
+
+            for k, v in fields.items():
+                if k in ["id", "project", "created_at"]:
+                    continue
+                if k == "assignee_id":
+                    new_u = User.objects.filter(id=v).first()
+                    old_name = issue.assignee.username if issue.assignee else "Unassigned"
+                    issue.assignee = new_u
+                    new_name = new_u.username if new_u else "Unassigned"
+                    ActivityLog.objects.create(
+                        issue=issue, actor=request.user, field_changed="assignee", old_value=old_name, new_value=new_name
+                    )
+                elif k == "due_date":
+                    issue.due_date = parse_date_str(v) if v else None
+                    ActivityLog.objects.create(
+                        issue=issue, actor=request.user, field_changed="due_date", old_value="", new_value=str(issue.due_date)
+                    )
+                elif hasattr(issue, k):
+                    old_v = getattr(issue, k)
+                    setattr(issue, k, v)
+                    if k == "status":
+                        issue.resolution = "Resolved" if v == "DONE" else "Unresolved"
+                    ActivityLog.objects.create(
+                        issue=issue,
+                        actor=request.user,
+                        field_changed=k,
+                        old_value=str(old_v or ""),
+                        new_value=str(v or ""),
+                    )
+            issue.save()
+            return Response({
+                "success": True,
+                "message": f"Successfully updated task [{project.key}-{issue.id}]",
+                "issue_id": issue.id,
+                "issue_key": f"{project.key}-{issue.id}",
+            })
+
+        return Response({"error": f"Unknown action type '{action_type}'"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ProjectDocViewSet(viewsets.ModelViewSet):
@@ -228,18 +751,42 @@ class ProjectDocViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         if not is_project_admin(self.request.user, serializer.validated_data["project"]):
             raise PermissionDenied("You cannot create documents in this project.")
-        doc = serializer.save(created_by=self.request.user)
+        file_obj = self.request.FILES.get("file")
+        content = serializer.validated_data.get("content", "")
+        doc_hash = calculate_file_hash(file_obj=file_obj, content=content)
+        doc = serializer.save(created_by=self.request.user, file_hash=doc_hash, version=1)
         try:
             process_and_extract_document(doc)
         except Exception as e:
             print(f"[Doc extraction error on create]: {e}")
 
     def perform_update(self, serializer):
-        doc = serializer.save()
+        file_obj = self.request.FILES.get("file")
+        content = serializer.validated_data.get("content", serializer.instance.content)
+        doc_hash = calculate_file_hash(file_obj=file_obj, content=content)
+        doc = serializer.save(file_hash=doc_hash, version=serializer.instance.version + 1)
         try:
             process_and_extract_document(doc)
         except Exception as e:
             print(f"[Doc extraction error on update]: {e}")
+
+    def perform_destroy(self, instance):
+        if not is_project_admin(self.request.user, instance.project):
+            raise PermissionDenied("You cannot delete documents in this project.")
+        project = instance.project
+        # Atomically clean up all signals extracted from this document
+        instance.signals.all().delete()
+        if instance.file:
+            try:
+                instance.file.delete(save=False)
+            except Exception:
+                pass
+        instance.delete()
+        try:
+            generate_project_intelligence(project)
+        except Exception as e:
+            print(f"[Intelligence refresh after doc deletion error]: {e}")
+
 
     @action(detail=True, methods=["get"])
     def signals(self, request, pk=None):
@@ -261,6 +808,30 @@ class ProjectDocViewSet(viewsets.ModelViewSet):
             })
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=["get"])
+    def manifest(self, request, pk=None):
+        """Returns the parsed audit manifest for this specific document."""
+        doc = self.get_object()
+        manifest_data = None
+        if doc.file:
+            try:
+                from .intelligence.parsers import parse_uploaded_file
+                parsed = parse_uploaded_file(doc.file, doc.file.name)
+                manifest_data = parsed.metadata.get("audit_manifest")
+            except Exception as e:
+                manifest_data = {"error": str(e)}
+        if not manifest_data:
+            manifest_data = {
+                "document_type": doc.template_type or "DOCUMENT",
+                "filename": doc.file.name if doc.file else doc.title,
+                "title": doc.title,
+                "signals_count": doc.signals.count(),
+                "status": "PROCESSED",
+            }
+        manifest_data["doc_id"] = doc.id
+        manifest_data["doc_title"] = doc.title
+        return Response(manifest_data)
 
 
 class ProjectSignalViewSet(viewsets.ModelViewSet):

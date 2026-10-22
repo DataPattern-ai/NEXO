@@ -8,12 +8,13 @@ import Dashboard from "./pages/Dashboard";
 import Teams from "./pages/Teams";
 import Tasks from "./pages/Tasks";
 import InviteAccept from "./pages/InviteAccept";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <p style={{ textAlign: "center", marginTop: 60 }}>Loading...</p>;
   if (!user) return <Navigate to="/login" />;
-  return children;
+  return <ErrorBoundary>{children}</ErrorBoundary>;
 }
 
 export default function App() {

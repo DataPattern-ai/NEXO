@@ -67,6 +67,8 @@ class ProjectDoc(models.Model):
     file = models.FileField(upload_to="project_docs/%Y%m%d/", null=True, blank=True)
     file_type = models.CharField(max_length=20, choices=FileType.choices, default=FileType.MARKDOWN)
     file_size = models.PositiveIntegerField(default=0, help_text="File size in bytes")
+    file_hash = models.CharField(max_length=64, blank=True, db_index=True, help_text="SHA-256 hash for deduplication and versioning")
+    version = models.PositiveIntegerField(default=1, help_text="Document revision number")
     raw_text = models.TextField(blank=True, help_text="Extracted plain text content from uploaded file")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="created_docs"
@@ -317,6 +319,7 @@ class ProjectIntelligenceSummary(models.Model):
     current_phase = models.CharField(max_length=200, blank=True, help_text="Active phase / workstream")
     executive_summary = models.TextField(blank=True, help_text="Concise 4-5 bullet executive briefing")
     signals_count = models.PositiveIntegerField(default=0)
+    normalized_state = models.JSONField(default=dict, blank=True, help_text="Structured normalized project state")
     last_synced_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
