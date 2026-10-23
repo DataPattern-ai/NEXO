@@ -3,7 +3,7 @@ import { userLabel } from "../utils/userLabel";
 import api from "../api/client";
 import MentionTextarea from "./MentionTextarea";
 import MarkdownRenderer from "./MarkdownRenderer";
-import { FileIcon, GitBranchIcon, PullRequestIcon, AttachmentIcon, IssueTypeIcon, PriorityIcon } from "./Icons";
+import { FileIcon, AttachmentIcon, IssueTypeIcon, PriorityIcon } from "./Icons";
 import { can as canPermission, ACTIONS } from "../permissions";
 import { useAuth } from "../context/AuthContext";
 
@@ -28,13 +28,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
   const [descVal, setDescVal] = useState("");
   const [subtaskTitle, setSubtaskTitle] = useState("");
   const [showSubtaskAdd, setShowSubtaskAdd] = useState(false);
-
-  // Figma & GitHub state
-  const [figmaUrl, setFigmaUrl] = useState("");
-  const [isEditingFigma, setIsEditingFigma] = useState(false);
-  const [githubPr, setGithubPr] = useState("");
-  const [isEditingGithub, setIsEditingGithub] = useState(false);
-  const [copiedBranch, setCopiedBranch] = useState(false);
+  const [workstreamVal, setWorkstreamVal] = useState("");
 
   // Attachments state
   const [uploadingFile, setUploadingFile] = useState(false);
@@ -50,8 +44,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
       setIssue(res.data);
       setTitleVal(res.data.title);
       setDescVal(res.data.description || "");
-      setFigmaUrl(res.data.figma_url || "");
-      setGithubPr(res.data.github_pr || "");
+      setWorkstreamVal(res.data.workstream || "");
     }).catch(() => {});
   }
 
@@ -64,6 +57,9 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
     try {
       const res = await api.patch(`/issues/${issueId}/`, payload);
       setIssue(res.data);
+      if (payload.workstream !== undefined) {
+        setWorkstreamVal(res.data.workstream || "");
+      }
       onUpdate && onUpdate();
       return true;
     } catch (err) {
@@ -85,21 +81,6 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
   async function handleSaveDesc(e) {
     e?.preventDefault();
     if (await updateFields({ description: descVal })) setIsEditingDesc(false);
-  }
-
-  async function handleSaveFigma() {
-    if (await updateField("figma_url", figmaUrl.trim())) setIsEditingFigma(false);
-  }
-
-  async function handleSaveGithub() {
-    if (await updateField("github_pr", githubPr.trim())) setIsEditingGithub(false);
-  }
-
-  function handleLoadSampleFigma() {
-    const sample = "https://www.figma.com/design/LKQ4FJ4bTnCSjedbRpk931/Sample-App-UI";
-    setFigmaUrl(sample);
-    updateField("figma_url", sample);
-    setIsEditingFigma(false);
   }
 
   async function handleAddSubtask(e) {
@@ -226,16 +207,6 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
   const reporterName = userLabel(issue.reporter) || "Project Member";
   const reporterInitials = reporterName.substring(0, 2).toUpperCase();
 
-  // Slugified branch name
-  const branchName = `feature/${keyDisplay.toLowerCase()}-${issue.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`;
-  const gitCommand = `git checkout -b ${branchName}`;
-
-  function copyGitBranch() {
-    navigator.clipboard?.writeText(gitCommand);
-    setCopiedBranch(true);
-    setTimeout(() => setCopiedBranch(false), 2000);
-  }
-
   return (
     <div className="jira-modal-backdrop" onClick={onClose}>
       <div className="jira-issue-drawer" onClick={(e) => e.stopPropagation()}>
@@ -357,135 +328,6 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                   )}
                 </div>
               )}
-            </div>
-
-            {/* FIGMA DESIGN EMBED INTEGRATION */}
-            <div className="jira-drawer-section">
-              <div className="jira-section-header-flex">
-                <label className="jira-drawer-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FF7262" strokeWidth="2"><path d="M5 3l14 9-14 9V3z"/></svg>
-                  <span>Figma Design Preview</span>
-                  {issue.figma_url && <span className="jira-connected-pill">Connected</span>}
-                </label>
-                {!isEditingFigma && !readOnly && (
-                  <button
-                    className="jira-btn-link-sm"
-                    onClick={() => setIsEditingFigma(true)}
-                  >
-                    {issue.figma_url ? "Edit Link" : "+ Attach Figma Design"}
-                  </button>
-                )}
-              </div>
-
-              {isEditingFigma ? (
-                <div className="jira-figma-attach-box">
-                  <input
-                    type="text"
-                    className="jira-input"
-                    placeholder="Paste Figma file or frame URL (https://www.figma.com/design/...)"
-                    value={figmaUrl}
-                    onChange={(e) => setFigmaUrl(e.target.value)}
-                    autoFocus
-                  />
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
-                    <button
-                      type="button"
-                      className="jira-btn-link-xs"
-                      onClick={handleLoadSampleFigma}
-                    >
-                      Load sample design mockup
-                    </button>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button className="jira-btn-primary-sm" onClick={handleSaveFigma}>Save Design</button>
-                      <button className="jira-btn-secondary-sm" onClick={() => setIsEditingFigma(false)}>Cancel</button>
-                    </div>
-                  </div>
-                </div>
-              ) : issue.figma_url ? (
-                <div className="jira-figma-embed-wrapper">
-                  <iframe
-                    title="Figma Embed"
-                    className="jira-figma-iframe"
-                    src={`https://www.figma.com/embed?embed_host=jira&url=${encodeURIComponent(issue.figma_url)}`}
-                    allowFullScreen
-                  />
-                  <div className="jira-figma-embed-footer">
-                    <a
-                      href={issue.figma_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="jira-btn-link-xs"
-                    >
-                      ↗ Open in Figma
-                    </a>
-                    <button
-                      className="jira-btn-link-xs danger"
-                      onClick={() => updateField("figma_url", "")}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            {/* GITHUB DEVELOPMENT PANEL */}
-            <div className="jira-drawer-section">
-              <div className="jira-section-header-flex">
-                <label className="jira-drawer-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <GitBranchIcon size={14} />
-                  <span>Development (GitHub)</span>
-                </label>
-                {!isEditingGithub && !readOnly && (
-                  <button
-                    className="jira-btn-link-sm"
-                    onClick={() => setIsEditingGithub(true)}
-                  >
-                    {issue.github_pr ? "Edit PR" : "+ Link Pull Request"}
-                  </button>
-                )}
-              </div>
-
-              {/* Git Branch Copy Bar */}
-              <div className="jira-git-branch-card">
-                <div className="jira-git-branch-left">
-                  <span className="jira-git-icon"><GitBranchIcon size={15} /></span>
-                  <div>
-                    <span className="jira-git-label">Suggested Git Branch:</span>
-                    <code className="jira-git-code">{branchName}</code>
-                  </div>
-                </div>
-                <button
-                  className="jira-btn-primary-sm"
-                  onClick={copyGitBranch}
-                  title="Copy git checkout command"
-                >
-                  {copiedBranch ? "Copied!" : "Copy Branch"}
-                </button>
-              </div>
-
-              {isEditingGithub ? (
-                <div className="jira-github-attach-box" style={{ marginTop: 8 }}>
-                  <input
-                    type="text"
-                    className="jira-input-sm"
-                    placeholder="Pull request title (e.g. PR #12: Data pipeline optimizer - Merged)"
-                    value={githubPr}
-                    onChange={(e) => setGithubPr(e.target.value)}
-                    autoFocus
-                  />
-                  <div style={{ display: "flex", gap: 6, marginTop: 6, justifyContent: "flex-end" }}>
-                    <button className="jira-btn-primary-sm" onClick={handleSaveGithub}>Save PR</button>
-                    <button className="jira-btn-secondary-sm" onClick={() => setIsEditingGithub(false)}>Cancel</button>
-                  </div>
-                </div>
-              ) : issue.github_pr ? (
-                <div className="jira-linked-pr-badge">
-                  <span className="jira-pr-icon"><PullRequestIcon size={14} /></span>
-                  <span className="jira-pr-text">{issue.github_pr}</span>
-                  <span className="jira-pr-status-merged">MERGED</span>
-                </div>
-              ) : null}
             </div>
 
             {/* Subtasks Section */}
@@ -840,6 +682,33 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                     </option>
                   ))}
                 </select>
+              )}
+            </div>
+
+            {/* Workstream Field */}
+            <div className="jira-drawer-field">
+              <label className="jira-drawer-field-label">Workstream</label>
+              {readOnly ? (
+                <div className="jira-drawer-field-readonly"><span>{issue.workstream || "None"}</span></div>
+              ) : (
+                <input
+                  type="text"
+                  className="jira-input"
+                  placeholder="e.g. Frontend, Auth, Billing"
+                  value={workstreamVal}
+                  onChange={(e) => setWorkstreamVal(e.target.value)}
+                  onBlur={() => {
+                    if (workstreamVal.trim() !== (issue.workstream || "")) {
+                      updateField("workstream", workstreamVal.trim());
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      e.target.blur();
+                    }
+                  }}
+                />
               )}
             </div>
 

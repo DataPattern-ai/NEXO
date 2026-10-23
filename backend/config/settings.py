@@ -31,7 +31,7 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-$f86+e5zok*(=posx*sk4&bcx-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
 
-allowed_hosts = ['localhost', '127.0.0.1', '0.0.0.0', 'testserver']
+allowed_hosts = ['localhost', '127.0.0.1', '0.0.0.0', 'testserver', '.vercel.app', '.now.sh']
 for host in os.getenv('ALLOWED_HOSTS', '').split(','):
     host = host.strip()
     if host:
@@ -41,7 +41,7 @@ vercel_host = os.getenv('VERCEL_URL')
 if vercel_host:
     allowed_hosts.append(vercel_host)
 
-ALLOWED_HOSTS = allowed_hosts
+ALLOWED_HOSTS = list(dict.fromkeys(allowed_hosts))
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SESSION_COOKIE_SECURE = not DEBUG
@@ -98,6 +98,8 @@ CSRF_TRUSTED_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:5173',
     'http://10.169.235.240:5173',
+    'https://*.vercel.app',
+    'https://*.now.sh',
 ]
 if frontend_url:
     CSRF_TRUSTED_ORIGINS.append(frontend_url)
@@ -224,10 +226,10 @@ if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD:
     EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
     EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
     EMAIL_USE_TLS = True
-    DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', f'Jira Software <{EMAIL_HOST_USER}>')
+    DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', f'NEXO <{EMAIL_HOST_USER}>')
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-    DEFAULT_FROM_EMAIL = 'Jira Software <noreply@jira-software.local>'
+    DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'NEXO <noreply@nexo.local>')
 
 
 # AI & PMO Intelligence Configuration

@@ -19,6 +19,7 @@ export default function CreateIssueModal({
   const [priority, setPriority] = useState("MEDIUM");
   const [assigneeId, setAssigneeId] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [workstream, setWorkstream] = useState("");
   const [parentId, setParentId] = useState("");
   const [existingIssues, setExistingIssues] = useState([]);
   const [projectMembers, setProjectMembers] = useState([]);
@@ -61,6 +62,7 @@ export default function CreateIssueModal({
         issue_type: issueType,
         priority: priority,
         due_date: dueDate || null,
+        workstream: workstream.trim() || "",
         assignee_id: assigneeId ? Number(assigneeId) : null,
       };
 
@@ -71,6 +73,7 @@ export default function CreateIssueModal({
       await api.post("/issues/", payload);
       setTitle("");
       setDescription("");
+      setWorkstream("");
       setParentId("");
       onIssueCreated && onIssueCreated();
       onClose();
@@ -216,15 +219,27 @@ export default function CreateIssueModal({
             )}
           </div>
 
-          {/* Due Date */}
-          <div className="jira-form-field">
-            <label className="jira-field-label">Due Date (Optional)</label>
-            <input
-              type="date"
-              className="jira-input"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-            />
+          {/* Due Date & Workstream */}
+          <div className="jira-form-row-2">
+            <div className="jira-form-field">
+              <label className="jira-field-label">Due Date (Optional)</label>
+              <input
+                type="date"
+                className="jira-input"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+              />
+            </div>
+            <div className="jira-form-field">
+              <label className="jira-field-label">Workstream (Optional)</label>
+              <input
+                type="text"
+                className="jira-input"
+                placeholder="e.g. Frontend, Auth, Billing"
+                value={workstream}
+                onChange={(e) => setWorkstream(e.target.value)}
+              />
+            </div>
           </div>
 
           {/* Actions */}

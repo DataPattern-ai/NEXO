@@ -1,3 +1,4 @@
+import datetime
 import hmac
 import io
 import re
@@ -652,6 +653,34 @@ class ProjectViewSet(viewsets.ModelViewSet):
             if not title:
                 return Response({"error": "Task title is required."}, status=status.HTTP_400_BAD_REQUEST)
 
+            # Idempotency / Duplicate creation check (within 60s)
+            cutoff_time = timezone.now() - datetime.timedelta(seconds=60)
+            existing_issue = Issue.objects.filter(
+                project=project,
+                title__iexact=title,
+                reporter=request.user,
+                created_at__gte=cutoff_time,
+            ).first()
+
+            if existing_issue:
+                assignee_name = existing_issue.assignee.username if existing_issue.assignee else "Unassigned"
+                due_date_str = str(existing_issue.due_date) if existing_issue.due_date else "None"
+                return Response({
+                    "success": True,
+                    "message": f"Task [{project.key}-{existing_issue.id}] '{existing_issue.title}' was already created recently. (Assignee: {assignee_name}, Due: {due_date_str}, Priority: {existing_issue.priority})",
+                    "issue_id": existing_issue.id,
+                    "issue_key": f"{project.key}-{existing_issue.id}",
+                    "duplicate_prevented": True,
+                    "fields": {
+                        "title": existing_issue.title,
+                        "assignee": assignee_name,
+                        "due_date": due_date_str,
+                        "priority": existing_issue.priority,
+                        "status": existing_issue.status,
+                        "workstream": existing_issue.workstream,
+                    },
+                })
+
             assignee = None
             if fields.get("assignee_id"):
                 assignee = User.objects.filter(id=fields.get("assignee_id")).first()
@@ -680,11 +709,21 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 old_value="",
                 new_value=f"Created via NEXO AI Assistant by {request.user.username}",
             )
+            assignee_name = issue.assignee.username if issue.assignee else "Unassigned"
+            due_date_str = str(issue.due_date) if issue.due_date else "None"
             return Response({
                 "success": True,
-                "message": f"Successfully created task [{project.key}-{issue.id}] {issue.title}",
+                "message": f"Successfully created task [{project.key}-{issue.id}] '{issue.title}' (Assignee: {assignee_name}, Due: {due_date_str}, Priority: {issue.priority})",
                 "issue_id": issue.id,
                 "issue_key": f"{project.key}-{issue.id}",
+                "fields": {
+                    "title": issue.title,
+                    "assignee": assignee_name,
+                    "due_date": due_date_str,
+                    "priority": issue.priority,
+                    "status": issue.status,
+                    "workstream": issue.workstream,
+                },
             })
 
         elif action_type == "UPDATE_ISSUE":

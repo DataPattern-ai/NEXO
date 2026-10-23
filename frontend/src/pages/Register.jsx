@@ -69,16 +69,42 @@ export default function Register() {
         navigate("/dashboard");
       }
     } catch (err) {
-      const emailErr = err?.response?.data?.email?.[0];
-      const pwdErr = err?.response?.data?.password?.[0];
-      const detailErr = err?.response?.data?.detail;
+      const data = err?.response?.data;
+      let msg = "";
 
-      const msg =
-        pwdErr ||
-        emailErr ||
-        detailErr ||
-        "Could not create account. Please check the entered information.";
-      setError(msg);
+      if (typeof data === "string" && data.length < 200 && !data.includes("<!DOCTYPE")) {
+        msg = data;
+      } else if (data && typeof data === "object") {
+        const usernameErr = Array.isArray(data.username) ? data.username[0] : data.username;
+        const emailErr = Array.isArray(data.email) ? data.email[0] : data.email;
+        const pwdErr = Array.isArray(data.password) ? data.password[0] : data.password;
+        const nonFieldErr = Array.isArray(data.non_field_errors) ? data.non_field_errors[0] : data.non_field_errors;
+
+        msg =
+          pwdErr ||
+          emailErr ||
+          usernameErr ||
+          nonFieldErr ||
+          data.detail ||
+          data.error ||
+          data.message ||
+          (typeof Object.values(data)[0] === "string"
+            ? Object.values(data)[0]
+            : Array.isArray(Object.values(data)[0])
+            ? Object.values(data)[0][0]
+            : null);
+      }
+
+      if (!msg) {
+        if (err?.response?.status >= 500) {
+          msg = "Server error occurred while creating your account. Please try again later.";
+        } else if (err?.message === "Network Error") {
+          msg = "Network error. Please check your internet connection.";
+        } else {
+          msg = "Could not create account. Please check the entered information.";
+        }
+      }
+      setError(typeof msg === "string" ? msg : JSON.stringify(msg));
     } finally {
       setLoading(false);
     }

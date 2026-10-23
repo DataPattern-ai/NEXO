@@ -2,8 +2,10 @@ import datetime
 import json
 import logging
 import re
+import zoneinfo
 from typing import Any, Dict, List, Optional, Tuple
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models import Count, Q
 from django.utils import timezone
@@ -20,18 +22,102 @@ User = get_user_model()
 # Date & Time Parsing Helpers
 # ---------------------------------------------------------------------------
 
+MONTH_MAP = {
+    'jan': 1, 'january': 1,
+    'feb': 2, 'february': 2,
+    'mar': 3, 'march': 3,
+    'apr': 4, 'april': 4,
+    'may': 5,
+    'jun': 6, 'june': 6,
+    'jul': 7, 'july': 7,
+    'aug': 8, 'august': 8,
+    'sep': 9, 'sept': 9, 'september': 9,
+    'oct': 10, 'october': 10,
+    'nov': 11, 'november': 11,
+    'dec': 12, 'december': 12,
+}
+
+
+def get_default_ref_date() -> datetime.date:
+    """Returns today's date in the configured timezone (Asia/Kolkata)."""
+    try:
+        tz_name = getattr(settings, 'REMINDER_TIME_ZONE', 'Asia/Kolkata')
+        tz = zoneinfo.ZoneInfo(tz_name)
+        return timezone.now().astimezone(tz).date()
+    except Exception:
+        return timezone.now().date()
+
+
 def parse_date_str(text: Optional[str], ref_date: Optional[datetime.date] = None) -> Optional[str]:
     """
     Parses a wide variety of date formats into standard ISO 'YYYY-MM-DD'.
-    Handles bracketed dates like [22/10/2026], DD/MM/YYYY, YYYY-MM-DD,
-    day names ('Thursday', 'next Friday'), and relative terms ('today', 'tomorrow').
+    Handles:
+    - Explicit textual dates: '25 October 2026', 'October 25, 2026', '25th Oct 2026', 'Oct 25 2026'
+    - Explicit numeric dates: '2026-10-25', '2026/10/25', '25/10/2026', '25-10-2026', '[22/10/2026]'
+    - Relative dates: 'today', 'tomorrow', 'day after tomorrow', 'in 3 days', 'in 2 weeks',
+      'next Monday', 'this Friday', 'by Friday', 'end of week'
+    All relative dates are resolved against the configured timezone (Asia/Kolkata).
     """
     if not text:
         return None
-    ref = ref_date or datetime.date.today()
+    ref = ref_date or get_default_ref_date()
     clean = str(text).strip()
 
-    # 1. ISO format: YYYY-MM-DD or YYYY/MM/DD
+    # Strip conversational/prepositional prefixes like 'deadline of', 'due on', 'by', 'at'
+    clean = re.sub(
+        r'^(?:(?:and\s+)?(?:make\s+|set\s+)?(?:the\s+)?(?:deadline|due\s*date)(?:\s+of|\s+is|\s+to|\s+as)?|due(?:\s+date)?(?:\s+on|\s+by|\s+at|\s+is|\s+as|\s+to|\s+for)?|by|on|at|for|until|the)\s+',
+        '',
+        clean,
+        flags=re.I
+    ).strip()
+
+    # 1. Textual month format: '25 October 2026' or '25th Oct 2026' or '25-Oct-2026'
+    m_textual_1 = re.search(
+        r'\b(\d{1,2})(?:st|nd|rd|th)?[\s\-_]+([a-zA-Z]{3,9})(?:[\s\-_,]+(\d{2,4}))?\b',
+        clean,
+        flags=re.I
+    )
+    if m_textual_1:
+        d_val = int(m_textual_1.group(1))
+        m_name = m_textual_1.group(2).lower()
+        if m_name in MONTH_MAP:
+            m_val = MONTH_MAP[m_name]
+            y_raw = m_textual_1.group(3)
+            if y_raw:
+                y_val = int(y_raw)
+                if y_val < 100:
+                    y_val += 2000
+            else:
+                y_val = ref.year
+            try:
+                return datetime.date(y_val, m_val, d_val).isoformat()
+            except ValueError:
+                pass
+
+    # 2. Textual month format: 'October 25, 2026' or 'Oct 25 2026' or 'Oct 25th, 2026'
+    m_textual_2 = re.search(
+        r'\b([a-zA-Z]{3,9})[\s\-_]+(\d{1,2})(?:st|nd|rd|th)?(?:[\s\-_,]+(\d{2,4}))?\b',
+        clean,
+        flags=re.I
+    )
+    if m_textual_2:
+        m_name = m_textual_2.group(1).lower()
+        if m_name in MONTH_MAP:
+            m_val = MONTH_MAP[m_name]
+            d_val = int(m_textual_2.group(2))
+            y_raw = m_textual_2.group(3)
+            if y_raw:
+                y_val = int(y_raw)
+                if y_val < 100:
+                    y_val += 2000
+            else:
+                y_val = ref.year
+            try:
+                return datetime.date(y_val, m_val, d_val).isoformat()
+            except ValueError:
+                pass
+
+    # 3. ISO format: YYYY-MM-DD or YYYY/MM/DD
     m_iso = re.search(r'\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b', clean)
     if m_iso:
         try:
@@ -39,30 +125,59 @@ def parse_date_str(text: Optional[str], ref_date: Optional[datetime.date] = None
         except ValueError:
             pass
 
-    # 2. Bracketed or explicit dates: [22/10/2026] or 22/10/2026 or 22-10-2026 (DD/MM/YYYY)
+    # 4. Bracketed or explicit dates: [22/10/2026] or 22/10/2026 or 22-10-2026 (DD/MM/YYYY)
     m_dmy = re.search(r'\[?(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\]?', clean)
     if m_dmy:
-        d, mth, y = int(m_dmy.group(1)), int(m_dmy.group(2)), int(m_dmy.group(3))
+        p1, p2, y = int(m_dmy.group(1)), int(m_dmy.group(2)), int(m_dmy.group(3))
         if y < 100:
             y += 2000
-        try:
-            return datetime.date(y, mth, d).isoformat()
-        except ValueError:
-            pass
+        # Standard DMY (day <= 31, month <= 12)
+        if p2 <= 12 and p1 <= 31:
+            try:
+                return datetime.date(y, p2, p1).isoformat()
+            except ValueError:
+                pass
+        # Fallback MDY (month <= 12, day <= 31)
+        if p1 <= 12 and p2 <= 31:
+            try:
+                return datetime.date(y, p1, p2).isoformat()
+            except ValueError:
+                pass
 
-    # 3. Relative terms
+    # 5. Relative terms
     lower = clean.lower()
-    if 'today' in lower:
-        return ref.isoformat()
+    if 'day after tomorrow' in lower:
+        return (ref + datetime.timedelta(days=2)).isoformat()
     if 'tomorrow' in lower:
         return (ref + datetime.timedelta(days=1)).isoformat()
+    if 'today' in lower:
+        return ref.isoformat()
+    if 'yesterday' in lower:
+        return (ref - datetime.timedelta(days=1)).isoformat()
+
+    # in X days / weeks
+    m_in_days = re.search(r'\bin\s+(\d+)\s+days?\b', lower)
+    if m_in_days:
+        return (ref + datetime.timedelta(days=int(m_in_days.group(1)))).isoformat()
+
+    m_in_weeks = re.search(r'\bin\s+(\d+)\s+weeks?\b', lower)
+    if m_in_weeks:
+        return (ref + datetime.timedelta(days=int(m_in_weeks.group(1)) * 7)).isoformat()
+
     if 'next week' in lower:
         return (ref + datetime.timedelta(days=7)).isoformat()
+
     if 'end of week' in lower or 'end of this week' in lower:
         diff = (4 - ref.weekday()) % 7  # Friday
         if diff == 0:
             diff = 7
         return (ref + datetime.timedelta(days=diff)).isoformat()
+
+    if 'end of next week' in lower:
+        diff = (4 - ref.weekday()) % 7
+        if diff == 0:
+            diff = 7
+        return (ref + datetime.timedelta(days=diff + 7)).isoformat()
 
     days_of_week = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
     for idx, day_name in enumerate(days_of_week):
@@ -71,8 +186,6 @@ def parse_date_str(text: Optional[str], ref_date: Optional[datetime.date] = None
             diff = (idx - current_day) % 7
             if diff == 0:
                 diff = 7 if 'next' in lower else 0
-            elif 'next' in lower and diff < 7:
-                diff += 7
             return (ref + datetime.timedelta(days=diff)).isoformat()
 
     return None
@@ -82,52 +195,97 @@ def parse_date_str(text: Optional[str], ref_date: Optional[datetime.date] = None
 # User & Assignee Resolution
 # ---------------------------------------------------------------------------
 
+def resolve_assignee(
+    project: Project,
+    name_query: Optional[str],
+    current_user: Optional[Any] = None
+) -> Tuple[Optional[Any], bool, List[str]]:
+    """
+    Resolves a person's name, username, or alias against registered NEXO users.
+    Returns: (user_or_none, is_ambiguous, candidate_names)
+    - If a unique user is matched: (user, False, [])
+    - If multiple matches found: (None, True, [candidate_names])
+    - If no matches found: (None, False, [])
+    """
+    if not name_query:
+        return None, False, []
+
+    clean = str(name_query).strip().strip('"\'').lstrip('@')
+    if not clean:
+        return None, False, []
+
+    clean_lower = clean.lower()
+
+    if clean_lower in ["me", "myself", "i", "self", "assigned to me"]:
+        return (current_user, False, []) if current_user else (None, False, [])
+
+    # 1. Exact matches across all registered system users
+    all_users = list(User.objects.filter(is_active=True))
+    exact_all = []
+    for u in all_users:
+        u_full = u.get_full_name().strip().lower()
+        if (
+            u.username.lower() == clean_lower
+            or (u.email and u.email.lower() == clean_lower)
+            or (u_full and u_full == clean_lower)
+            or (u.first_name and u.first_name.lower() == clean_lower)
+        ):
+            exact_all.append(u)
+
+    if len(exact_all) > 1:
+        return None, True, [u.username for u in exact_all]
+    elif len(exact_all) == 1:
+        return exact_all[0], False, []
+
+    member_user_ids = project.memberships.values_list('user_id', flat=True)
+    project_users = list(User.objects.filter(id__in=member_user_ids))
+
+    # 3. Word boundary / prefix match (require at least 3 characters)
+    if len(clean) >= 3:
+        prefix_proj = []
+        for u in project_users:
+            u_full = u.get_full_name().strip().lower()
+            name_tokens = u_full.split() if u_full else []
+            if (
+                clean_lower in name_tokens
+                or u.username.lower().startswith(clean_lower)
+                or (u.first_name and u.first_name.lower().startswith(clean_lower))
+                or (u.last_name and u.last_name.lower().startswith(clean_lower))
+            ):
+                prefix_proj.append(u)
+
+        if len(prefix_proj) == 1:
+            return prefix_proj[0], False, []
+        elif len(prefix_proj) > 1:
+            return None, True, [u.username for u in prefix_proj]
+
+        prefix_all = []
+        for u in all_users:
+            u_full = u.get_full_name().strip().lower()
+            name_tokens = u_full.split() if u_full else []
+            if (
+                clean_lower in name_tokens
+                or u.username.lower().startswith(clean_lower)
+                or (u.first_name and u.first_name.lower().startswith(clean_lower))
+                or (u.last_name and u.last_name.lower().startswith(clean_lower))
+            ):
+                prefix_all.append(u)
+
+        if len(prefix_all) == 1:
+            return prefix_all[0], False, []
+        elif len(prefix_all) > 1:
+            return None, True, [u.username for u in prefix_all[:5]]
+
+    return None, False, []
+
+
 def resolve_user_by_name(project: Project, name_query: Optional[str]) -> Optional[Any]:
     """
     Resolves a person's name, username, or alias to an active User instance.
     Searches project members first, then the system user base.
     """
-    if not name_query:
-        return None
-    clean = str(name_query).strip().strip('"\'')
-    if not clean:
-        return None
-
-    # Fetch project users
-    member_user_ids = project.memberships.values_list('user_id', flat=True)
-    project_users = list(User.objects.filter(id__in=member_user_ids))
-
-    clean_lower = clean.lower()
-
-    # Exact match on username or full name within project
-    for u in project_users:
-        if u.username.lower() == clean_lower:
-            return u
-        if u.get_full_name().lower() == clean_lower:
-            return u
-        if u.first_name.lower() == clean_lower or u.last_name.lower() == clean_lower:
-            return u
-
-    # Substring match within project
-    for u in project_users:
-        if clean_lower in u.username.lower() or (u.first_name and clean_lower in u.first_name.lower()):
-            return u
-
-    # Global fallback match across active system users
-    global_match = User.objects.filter(
-        Q(username__iexact=clean) |
-        Q(first_name__iexact=clean) |
-        Q(last_name__iexact=clean) |
-        Q(email__iexact=clean)
-    ).first()
-    if global_match:
-        return global_match
-
-    global_sub = User.objects.filter(
-        Q(username__icontains=clean) |
-        Q(first_name__icontains=clean)
-    ).first()
-    return global_sub
+    user, _, _ = resolve_assignee(project, name_query)
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -137,15 +295,40 @@ def resolve_user_by_name(project: Project, name_query: Optional[str]) -> Optiona
 def extract_task_creation_parameters(user_message: str, project: Project, current_user: Any) -> Dict[str, Any]:
     """
     Intelligently extracts task attributes from natural language:
-    - Pure task title/name
-    - Assignee (resolved to User instance)
-    - Deadline / Due date (resolved to YYYY-MM-DD)
+    - Pure task title/name (stripping conversational prefixes & residual phrases)
+    - Explicit titles in quotes if provided
+    - Assignee (resolved against registered NEXO users)
+    - Deadline / Due date (resolved to YYYY-MM-DD via configured timezone)
     - Priority (LOW, MEDIUM, HIGH, CRITICAL)
     - Status (TODO, IN_PROGRESS, DONE)
     - Workstream / Module
-    - Issue type (TASK, BUG, STORY, EPIC)
+    - Issue type (TASK, BUG, STORY, EPIC, SUBTASK)
     """
     working = user_message.strip()
+
+    # 0. Check for explicit quoted title
+    explicit_quoted_title = None
+    # Look for quotes specifically after creation intent or named/titled
+    m_quoted = re.search(
+        r'(?:(?:task|issue|ticket|item|named|called|titled|title|summary)\s*[:\s]*|^\s*)["\']([^"\']{2,150})["\']',
+        working,
+        flags=re.I
+    )
+    if not m_quoted:
+        # General quote check (not preceded by assign or deadline)
+        m_any_quote = re.search(r'["\']([^"\']{2,150})["\']', working)
+        if m_any_quote:
+            prefix_before = working[:m_any_quote.start()].lower()
+            if not re.search(r'\b(?:assign(?:\s+it)?\s+to|deadline|due(?:\s+date)?)\s*$', prefix_before):
+                m_quoted = m_any_quote
+
+    if m_quoted:
+        candidate_title = m_quoted.group(1).strip()
+        # Verify it is not just a date or priority
+        if candidate_title.lower() not in ["low", "medium", "high", "critical", "todo", "done"] and not parse_date_str(candidate_title):
+            explicit_quoted_title = candidate_title
+            # Replace quoted part with token to preserve sentence structure while extracting other attributes
+            working = working[:m_quoted.start()] + ' __QUOTED_TITLE__ ' + working[m_quoted.end():]
 
     # 1. Priority extraction
     priority = "MEDIUM"
@@ -165,54 +348,56 @@ def extract_task_creation_parameters(user_message: str, project: Project, curren
         working = working[:m_prio.start()] + ' ' + working[m_prio.end():]
     elif re.search(r'\b(critical|urgent)\b', working, flags=re.I):
         priority = "CRITICAL"
+        working = re.sub(r'\b(critical|urgent)\b', ' ', working, flags=re.I)
 
     # 2. Status extraction
     status_val = "TODO"
-    if re.search(r'\b(?:status\s+(?:is\s+|to\s+|as\s+)?(in\s+progress|active)|(?:in|mark as)\s+progress)\b', working, flags=re.I):
+    m_stat_prog = re.search(r'\b(?:status\s+(?:is\s+|to\s+|as\s+)?(in\s+progress|active)|(?:in|mark as)\s+progress)\b', working, flags=re.I)
+    if m_stat_prog:
         status_val = "IN_PROGRESS"
-    elif re.search(r'\b(?:status\s+(?:is\s+|to\s+|as\s+)?(done|completed|closed)|(?:mark as\s+)?(?:done|completed))\b', working, flags=re.I):
-        status_val = "DONE"
+        working = working[:m_stat_prog.start()] + ' ' + working[m_stat_prog.end():]
+    else:
+        m_stat_done = re.search(r'\b(?:status\s+(?:is\s+|to\s+|as\s+)?(done|completed|closed)|(?:mark as\s+)?(?:done|completed))\b', working, flags=re.I)
+        if m_stat_done:
+            status_val = "DONE"
+            working = working[:m_stat_done.start()] + ' ' + working[m_stat_done.end():]
 
     # 3. Issue type extraction
     issue_type = "TASK"
-    if re.search(r'\b(bug|defect|issue|incident)\b', working, flags=re.I):
+    if re.search(r'\b(bug|defect|incident)\b', working, flags=re.I):
         issue_type = "BUG"
     elif re.search(r'\b(story|user story|feature)\b', working, flags=re.I):
         issue_type = "STORY"
     elif re.search(r'\b(epic|initiative)\b', working, flags=re.I):
         issue_type = "EPIC"
+    elif re.search(r'\b(subtask)\b', working, flags=re.I):
+        issue_type = "SUBTASK"
 
-    # 4. Assignee extraction
-    assignee_user = None
-    assignee_str = None
-    m_ass = re.search(
-        r'\b(?:and\s+)?assign(?:\s+it)?\s+to\s+([a-zA-Z0-9_\s]+?)(?=\s+(?:and|with|deadline|due|status|priority|in\s+workstream)|\s*$)',
+    # 4. Workstream extraction
+    workstream = ""
+    m_ws = re.search(
+        r'\b(?:in|for)\s+(?:workstream|module)\s+([a-zA-Z0-9_\-\s]+?)(?=\s+(?:and|with|assign|priority|status|deadline|due|by)|\s*$)',
         working,
         flags=re.I,
     )
-    if m_ass:
-        assignee_str = m_ass.group(1).strip()
-        working = working[:m_ass.start()] + ' ' + working[m_ass.end():]
+    if m_ws:
+        workstream = m_ws.group(1).strip()
+        working = working[:m_ws.start()] + ' ' + working[m_ws.end():]
     else:
-        m_ass2 = re.search(
-            r'\b(?:and\s+)?assigned\s+to\s+([a-zA-Z0-9_\s]+?)(?=\s+(?:and|with|deadline|due|status|priority|in\s+workstream)|\s*$)',
-            working,
-            flags=re.I,
+        existing_ws = (
+            project.issues.exclude(workstream="")
+            .values_list("workstream", flat=True)
+            .distinct()
         )
-        if m_ass2:
-            assignee_str = m_ass2.group(1).strip()
-            working = working[:m_ass2.start()] + ' ' + working[m_ass2.end():]
-
-    if assignee_str:
-        if assignee_str.lower() in ["me", "myself", "assigned to me", "i"]:
-            assignee_user = current_user
-        else:
-            assignee_user = resolve_user_by_name(project, assignee_str)
+        for ws in existing_ws:
+            if ws and len(ws) >= 3 and ws.lower() in working.lower():
+                workstream = ws
+                break
 
     # 5. Deadline / Due Date extraction
     deadline_str = None
     m_date = re.search(
-        r'\b(?:and\s+)?(?:make\s+|set\s+)?(?:the\s+)?(?:deadline|due\s*date)\s+(?:as|to|is)?\s+([^,\n]+?)(?=\s+(?:and|with|assign|priority|status|in\s+workstream)|\s*$)',
+        r'\b(?:and\s+)?(?:with\s+)?(?:make\s+|set\s+)?(?:the\s+)?(?:deadline|due\s*date)(?:\s+(?:of|is|as|to))?\s+([^,\n]+?)(?=\s+(?:and|with|assign|priority|status|in\s+workstream)|\s*$)',
         working,
         flags=re.I,
     )
@@ -221,57 +406,120 @@ def extract_task_creation_parameters(user_message: str, project: Project, curren
         working = working[:m_date.start()] + ' ' + working[m_date.end():]
     else:
         m_due = re.search(
-            r'\b(?:and\s+)?(?:is\s+)?due\s+(?:on|by|at|as)?\s+(.+?)(?=\s+(?:and|with|assign|priority|status|in\s+workstream)|\s*$)',
+            r'\b(?:and\s+)?(?:with\s+)?(?:is\s+)?due(?:\s+(?:on|by|at|as|for))?\s+([^,\n]+?)(?=\s+(?:and|with|assign|priority|status|in\s+workstream)|\s*$)',
             working,
             flags=re.I,
         )
         if m_due:
             deadline_str = m_due.group(1).strip()
             working = working[:m_due.start()] + ' ' + working[m_due.end():]
+        else:
+            m_by = re.search(
+                r'\b(?:and\s+)?(?:with\s+)?by\s+(tomorrow|today|day\s+after\s+tomorrow|next\s+\w+|this\s+\w+|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}(?:st|nd|rd|th)?\s+[a-zA-Z]{3,9}(?:\s*,?\s*\d{2,4})?|[a-zA-Z]{3,9}\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*,?\s*\d{2,4})?)\b',
+                working,
+                flags=re.I,
+            )
+            if m_by:
+                deadline_str = m_by.group(1).strip()
+                working = working[:m_by.start()] + ' ' + working[m_by.end():]
 
     due_date = parse_date_str(deadline_str) if deadline_str else None
 
-    # 6. Workstream extraction
-    workstream = ""
-    m_ws = re.search(
-        r'\b(?:in|for)\s+(?:workstream|module)\s+([a-zA-Z0-9_\s]+?)(?=\s+(?:and|with|assign|priority|status|deadline)|\s*$)',
+    # Check for "for <name> to <action>" pattern AFTER deadline extraction
+    for_to_assignee = None
+    for_to_action = None
+    m_for_to = re.search(
+        r'\b(?:create|add|draft|make)\s+(?:a\s+)?(?:new\s+)?(?:task|issue|ticket|item)\s+for\s+([a-zA-Z0-9_.\s]+?)\s+to\s+([^,.\n]+)',
+        working,
+        flags=re.I
+    )
+    if m_for_to:
+        for_to_assignee = m_for_to.group(1).strip()
+        for_to_action = m_for_to.group(2).strip()
+        working = working[:m_for_to.start()] + ' ' + working[m_for_to.end():]
+
+    # 6. Assignee extraction
+    assignee_user = None
+    assignee_str = None
+    is_ambiguous = False
+    candidates = []
+
+    m_ass = re.search(
+        r'\b(?:and\s+)?assign(?:\s+it)?\s+to\s+([a-zA-Z0-9_.\s]+?)(?=\s+(?:and|with|deadline|due|by|status|priority|in\s+workstream)|\s*$)',
         working,
         flags=re.I,
     )
-    if m_ws:
-        workstream = m_ws.group(1).strip()
-        working = working[:m_ws.start()] + ' ' + working[m_ws.end():]
+    if m_ass:
+        assignee_str = m_ass.group(1).strip()
+        working = working[:m_ass.start()] + ' ' + working[m_ass.end():]
     else:
-        # Check against existing project workstreams
-        existing_ws = (
-            project.issues.exclude(workstream="")
-            .values_list("workstream", flat=True)
-            .distinct()
+        m_ass2 = re.search(
+            r'\b(?:and\s+)?assigned\s+to\s+([a-zA-Z0-9_.\s]+?)(?=\s+(?:and|with|deadline|due|by|status|priority|in\s+workstream)|\s*$)',
+            working,
+            flags=re.I,
         )
-        for ws in existing_ws:
-            if ws.lower() in working.lower():
-                workstream = ws
-                break
+        if m_ass2:
+            assignee_str = m_ass2.group(1).strip()
+            working = working[:m_ass2.start()] + ' ' + working[m_ass2.end():]
+        elif for_to_assignee:
+            assignee_str = for_to_assignee
+        else:
+            m_for = re.search(
+                r'\bfor\s+([a-zA-Z0-9_]+)\b(?=\s+(?:and|with|deadline|due|by|status|priority)|\s*$)',
+                working,
+                flags=re.I,
+            )
+            if m_for:
+                assignee_str = m_for.group(1).strip()
+                working = working[:m_for.start()] + ' ' + working[m_for.end():]
 
-    # 7. Clean title extraction from remaining string
-    clean_title = re.sub(
-        r'^(?:please\s+)?(?:can\s+you\s+)?(?:create|add|make|draft)\s+(?:a\s+)?(?:new\s+)?(?:task|issue|ticket|item)\s*(?:named|called|title|titled|for)?\s*:?\s*',
-        '',
-        working,
-        flags=re.I,
-    ).strip()
+    if assignee_str:
+        assignee_user, is_ambiguous, candidates = resolve_assignee(project, assignee_str, current_user)
 
-    clean_title = clean_title.strip('"\'')
-    # Strip dangling connector words at the end
-    clean_title = re.sub(r'\s+\b(?:and|with|in|for|as|to|on)\b\s*$', '', clean_title, flags=re.I).strip()
-    clean_title = re.sub(r'\s{2,}', ' ', clean_title).strip()
+    # 7. Clean Title Determination
+    if explicit_quoted_title:
+        clean_title = explicit_quoted_title
+    elif for_to_action:
+        clean_title = for_to_action
+        clean_title = re.sub(r'\b(?:with\s+)?(?:deadline|due\s*date|due\s+by|due\s+on|by)\s+.*$', '', clean_title, flags=re.I).strip()
+        clean_title = re.sub(r'\b(?:with\s+)?(?:priority\s+.*|critical|urgent|high\s+priority|low\s+priority)\b', '', clean_title, flags=re.I).strip()
+    else:
+        clean_title = working
+        m_named = re.search(
+            r'\b(?:named|called|titled|title|summary)\s*[:\s]*["\']?([^"\',]+?)["\']?(?=\s+(?:and\s+assign|and\s+make|and\s+set|with|deadline|due|by|status|priority|in\s+workstream)|\s*$)',
+            clean_title,
+            flags=re.I,
+        )
+        if m_named:
+            clean_title = m_named.group(1).strip()
+        else:
+            clean_title = re.sub(
+                r'^(?:please\s+)?(?:can\s+(?:you|we)\s+)?(?:i\s+(?:want|need)\s+to\s+)?(?:create|add|make|draft|new)\s+(?:a\s+)?(?:new\s+)?(?:task|issue|ticket|item|work\s*item)\s*(?:named|called|title|titled|for)?\s*:?\s*',
+                '',
+                clean_title,
+                flags=re.I,
+            ).strip()
+
+        clean_title = clean_title.replace('__QUOTED_TITLE__', '').strip()
+        clean_title = re.sub(r'\b(?:with\s+)?(?:deadline|due\s*date|due\s+by|due\s+on|by)\s+.*$', '', clean_title, flags=re.I).strip()
+        clean_title = re.sub(r'\b(?:with\s+)?(?:priority\s+.*|critical|urgent|high\s+priority|low\s+priority)\b', '', clean_title, flags=re.I).strip()
+        clean_title = clean_title.strip('"\'')
+        clean_title = re.sub(r'^(?:and|with|for|to|on)\s+', '', clean_title, flags=re.I).strip()
+        clean_title = re.sub(r'\s+\b(?:and|with|in|for|as|to|on|by)\b\s*$', '', clean_title, flags=re.I).strip()
+        clean_title = re.sub(r'\s{2,}', ' ', clean_title).strip()
+
     if not clean_title:
         clean_title = "New Project Task"
+
+    # Ensure title starts with an uppercase letter
+    clean_title = clean_title[:1].upper() + clean_title[1:]
 
     # Human-readable proposal summary
     desc_parts = [f"Create {issue_type.title()} '{clean_title}'"]
     if assignee_user:
         desc_parts.append(f"assigned to {assignee_user.username}")
+    elif assignee_str and not is_ambiguous:
+        desc_parts.append(f"(assignee '{assignee_str}' unassigned)")
     if due_date:
         desc_parts.append(f"due on {due_date}")
     if workstream:
@@ -282,6 +530,10 @@ def extract_task_creation_parameters(user_message: str, project: Project, curren
         "title": clean_title,
         "assignee_id": assignee_user.id if assignee_user else None,
         "assignee_name": assignee_user.username if assignee_user else None,
+        "assignee_ambiguous": is_ambiguous,
+        "assignee_candidates": candidates,
+        "assignee_unknown": bool(assignee_str and not assignee_user and not is_ambiguous),
+        "assignee_query": assignee_str,
         "due_date": due_date,
         "priority": priority,
         "status": status_val,
@@ -631,6 +883,18 @@ def handle_assistant_query(project: Project, user: Any, user_message: str) -> Di
         extracted = extract_task_creation_parameters(msg, project, user)
         clean_title = extracted["title"]
 
+        # Ambiguous assignee check: prompt clarification
+        if extracted.get("assignee_ambiguous"):
+            candidates_str = ", ".join(f"**{c}**" for c in extracted["assignee_candidates"])
+            return {
+                "type": "ANSWER",
+                "reply": (
+                    f"I found multiple team members matching '**{extracted['assignee_query']}**': {candidates_str}.\n\n"
+                    f"Which team member would you like to assign this task to?"
+                ),
+                "citations": [],
+            }
+
         proposal_fields = {
             "title": clean_title,
             "status": extracted["status"],
@@ -645,9 +909,16 @@ def handle_assistant_query(project: Project, user: Any, user_message: str) -> Di
         assignee_display = f" assigned to **{extracted['assignee_name']}**" if extracted["assignee_name"] else ""
         date_display = f" with deadline **{extracted['due_date']}**" if extracted["due_date"] else ""
         priority_display = f" [{extracted['priority']} Priority]"
+        workstream_display = f" in workstream **{extracted['workstream']}**" if extracted["workstream"] else ""
+
+        unknown_note = (
+            f"\n\n*(Note: User '**{extracted['assignee_query']}**' was not found in registered project members, so this task is currently unassigned.)*"
+            if extracted.get("assignee_unknown")
+            else ""
+        )
 
         reply_text = (
-            f"I have drafted a new task proposal: **{clean_title}**{assignee_display}{date_display}{priority_display}.\n\n"
+            f"I have drafted a new task proposal: **{clean_title}**{assignee_display}{date_display}{workstream_display}{priority_display}.{unknown_note}\n\n"
             f"Please review the details below and click **'Approve & Execute'** to add it to your project tracker:"
         )
 

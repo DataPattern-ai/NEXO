@@ -303,3 +303,180 @@ class TaskManagementEnhancementTests(TestCase):
         self.assertEqual(resp_workload.data["type"], "ANSWER")
         self.assertIn("alice_dev", resp_workload.data["reply"])
 
+    def test_parse_date_str_explicit_and_relative(self):
+        """parse_date_str handles explicit textual dates, numeric formats, and relative dates with timezone."""
+        import datetime
+        from projects.assistant import parse_date_str
+
+        ref = datetime.date(2026, 10, 23)  # Friday
+
+        # Explicit textual formats
+        self.assertEqual(parse_date_str("25 October 2026", ref_date=ref), "2026-10-25")
+        self.assertEqual(parse_date_str("October 25, 2026", ref_date=ref), "2026-10-25")
+        self.assertEqual(parse_date_str("25th Oct 2026", ref_date=ref), "2026-10-25")
+        self.assertEqual(parse_date_str("Oct 25 2026", ref_date=ref), "2026-10-25")
+        self.assertEqual(parse_date_str("deadline of 25 October 2026", ref_date=ref), "2026-10-25")
+        self.assertEqual(parse_date_str("due by 25 October 2026", ref_date=ref), "2026-10-25")
+
+        # Explicit numeric formats
+        self.assertEqual(parse_date_str("2026-10-25", ref_date=ref), "2026-10-25")
+        self.assertEqual(parse_date_str("25/10/2026", ref_date=ref), "2026-10-25")
+        self.assertEqual(parse_date_str("[22/10/2026]", ref_date=ref), "2026-10-22")
+
+        # Relative terms
+        self.assertEqual(parse_date_str("today", ref_date=ref), "2026-10-23")
+        self.assertEqual(parse_date_str("tomorrow", ref_date=ref), "2026-10-24")
+        self.assertEqual(parse_date_str("day after tomorrow", ref_date=ref), "2026-10-25")
+        self.assertEqual(parse_date_str("in 3 days", ref_date=ref), "2026-10-26")
+        self.assertEqual(parse_date_str("in 2 weeks", ref_date=ref), "2026-11-06")
+
+        # Weekdays
+        self.assertEqual(parse_date_str("next Monday", ref_date=ref), "2026-10-26")
+        self.assertEqual(parse_date_str("Friday", ref_date=ref), "2026-10-23")
+
+    def test_assignee_resolution_exact_and_ambiguity(self):
+        """resolve_assignee handles exact matching, disambiguates, and rejects arbitrary assignments."""
+        from projects.assistant import resolve_assignee
+
+        # 1. Exact match by username
+        u, is_ambig, _ = resolve_assignee(self.project, "alice_dev")
+        self.assertEqual(u, self.member_user)
+        self.assertFalse(is_ambig)
+
+        # 2. Exact match by email
+        u, is_ambig, _ = resolve_assignee(self.project, "alice@nexo.test")
+        self.assertEqual(u, self.member_user)
+        self.assertFalse(is_ambig)
+
+        # 3. Exact match by full name
+        u, is_ambig, _ = resolve_assignee(self.project, "Alice Engineer")
+        self.assertEqual(u, self.member_user)
+        self.assertFalse(is_ambig)
+
+        # 4. "me" / "myself" resolves to current_user
+        u, is_ambig, _ = resolve_assignee(self.project, "me", current_user=self.admin_user)
+        self.assertEqual(u, self.admin_user)
+        self.assertFalse(is_ambig)
+
+        # 5. Unknown user returns None without error
+        u, is_ambig, _ = resolve_assignee(self.project, "NonExistentPerson")
+        self.assertIsNone(u)
+        self.assertFalse(is_ambig)
+
+        # 6. Ambiguous match returns is_ambiguous=True
+        User.objects.create_user(
+            username="alice_tester",
+            first_name="Alice",
+            last_name="Tester",
+            email="alice_t@nexo.test",
+            password="password123",
+        )
+        u, is_ambig, cands = resolve_assignee(self.project, "Alice")
+        self.assertIsNone(u)
+        self.assertTrue(is_ambig)
+        self.assertGreaterEqual(len(cands), 2)
+
+    def test_ai_assistant_quoted_title_and_field_extraction(self):
+        """Quoted title is extracted purely as task title rather than the whole prompt."""
+        self.client.force_authenticate(user=self.admin_user)
+
+        resp = self.client.post(
+            f"/api/projects/{self.project.id}/ai_assistant/",
+            {"message": 'Create a task "Implement OAuth 2.0 PKCE flow" for Alice with deadline 25 October 2026 with High priority'},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["type"], "PROPOSAL")
+
+        proposal = resp.data["proposal"]
+        fields = proposal["fields"]
+        self.assertEqual(fields["title"], "Implement OAuth 2.0 PKCE flow")
+        self.assertEqual(fields["assignee_id"], self.member_user.id)
+        self.assertEqual(fields["due_date"], "2026-10-25")
+        self.assertEqual(fields["priority"], "HIGH")
+
+    def test_ai_assistant_for_name_to_action_pattern(self):
+        """'Create a task for [Name] to [Action]' pattern extracts assignee, action title, and deadline."""
+        self.client.force_authenticate(user=self.admin_user)
+
+        resp = self.client.post(
+            f"/api/projects/{self.project.id}/ai_assistant/",
+            {"message": "create a task for Alice to review security audit by 2026-10-25"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["type"], "PROPOSAL")
+
+        fields = resp.data["proposal"]["fields"]
+        self.assertEqual(fields["title"], "Review security audit")
+        self.assertEqual(fields["assignee_id"], self.member_user.id)
+        self.assertEqual(fields["due_date"], "2026-10-25")
+
+    def test_ai_assistant_ambiguous_assignee_clarification(self):
+        """Ambiguous assignee prompts user for clarification instead of creating an arbitrary task."""
+        User.objects.create_user(
+            username="alice_tester",
+            first_name="Alice",
+            last_name="Tester",
+            email="alice_t@nexo.test",
+            password="password123",
+        )
+        self.client.force_authenticate(user=self.admin_user)
+
+        resp = self.client.post(
+            f"/api/projects/{self.project.id}/ai_assistant/",
+            {"message": "Create task Deploy Service for Alice"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["type"], "ANSWER")
+        self.assertIn("multiple team members matching", resp.data["reply"])
+
+    def test_ai_execute_duplicate_prevention_and_confirmation(self):
+        """ai_execute confirms actual saved fields and prevents duplicate creation upon retry."""
+        self.client.force_authenticate(user=self.admin_user)
+
+        proposal = {
+            "action": "CREATE_ISSUE",
+            "fields": {
+                "title": "Idempotent Backup Service",
+                "priority": "HIGH",
+                "status": "TODO",
+                "workstream": "Infrastructure",
+                "due_date": "2026-11-01",
+                "assignee_id": self.member_user.id,
+            },
+            "description": "Create task 'Idempotent Backup Service'",
+        }
+
+        # First execution
+        resp1 = self.client.post(
+            f"/api/projects/{self.project.id}/ai_execute/",
+            {"proposal": proposal},
+            format="json",
+        )
+        self.assertEqual(resp1.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp1.data["success"])
+        self.assertIn("Idempotent Backup Service", resp1.data["message"])
+        self.assertIn("fields", resp1.data)
+        self.assertEqual(resp1.data["fields"]["title"], "Idempotent Backup Service")
+        self.assertEqual(resp1.data["fields"]["workstream"], "Infrastructure")
+
+        first_issue_id = resp1.data["issue_id"]
+
+        # Retry / duplicate execution within 60s
+        resp2 = self.client.post(
+            f"/api/projects/{self.project.id}/ai_execute/",
+            {"proposal": proposal},
+            format="json",
+        )
+        self.assertEqual(resp2.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp2.data["success"])
+        self.assertTrue(resp2.data.get("duplicate_prevented"))
+        self.assertEqual(resp2.data["issue_id"], first_issue_id)
+        self.assertEqual(
+            Issue.objects.filter(project=self.project, title="Idempotent Backup Service").count(),
+            1,
+        )
+
+

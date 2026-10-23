@@ -218,7 +218,7 @@ The NEXO Team
     </div>
     """
 
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@jira-software.local")
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@nexo.local")
     try:
         send_mail_background(subject, message, from_email, [invited_email], html_message=html_message)
         return True
@@ -277,7 +277,7 @@ The NEXO Team
     </div>
     """
 
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@jira-software.local")
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@nexo.local")
 
     try:
         send_mail(subject, message, from_email, [email], html_message=html_message)
@@ -365,7 +365,7 @@ def send_notification_email(
     body_label: str = None,
 ) -> bool:
     """
-    Unified NEXO notification email matching real Jira's structure:
+    Unified NEXO notification email structure:
 
     Header  : NEXO logo + app name
     Action  : "[Actor] [action] on [Issue Key]"
@@ -493,7 +493,7 @@ def send_notification_email(
         f"The NEXO Team\n"
     )
 
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@NEXO.local")
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@nexo.local")
 
     try:
         send_mail_background(subject, plain_message, from_email, [recipient_email], html_message=html_message)
@@ -556,7 +556,7 @@ The NEXO Team
     </div>
     """
 
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@jira-software.local")
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@nexo.local")
 
     try:
         import ssl
