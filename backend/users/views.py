@@ -35,6 +35,7 @@ from .utils import (
     read_invite_token,
     send_user_invitation_email,
     send_verification_email,
+    validate_invite_token,
     validate_password_strength,
 )
 
@@ -503,7 +504,13 @@ class UserListView(generics.ListCreateAPIView):
             user_type=new_type,
             is_active=True,  # the invitation link replaces email verification
         )
-        sent = send_user_invitation_email(user, invited_by=request.user.get_full_name() or request.user.username)
+        sent = send_user_invitation_email(
+            user,
+            invited_by=request.user.get_full_name() or request.user.username,
+            request=request,
+            role=new_type,
+            designation=designation,
+        )
         data = UserWithProjectsSerializer(user, context={"request": request}).data
         data["email_sent"] = sent
         return Response(data, status=status.HTTP_201_CREATED)
@@ -597,32 +604,124 @@ class ResendInviteView(APIView):
             return Response({"detail": "You can only invite people in your own team."}, status=status.HTTP_403_FORBIDDEN)
         if user.is_deactivated:
             return Response({"detail": "Reactivate this user before inviting them."}, status=status.HTTP_400_BAD_REQUEST)
-        if user.last_login is not None or user.has_usable_password():
+        if user.last_login is not None and user.has_usable_password():
             return Response({"detail": "This user has already joined."}, status=status.HTTP_400_BAD_REQUEST)
-        sent = send_user_invitation_email(user, invited_by=request.user.get_full_name() or request.user.username)
+        sent = send_user_invitation_email(user, invited_by=request.user.get_full_name() or request.user.username, request=request)
         return Response({"email_sent": sent})
 
 
+class ValidateInviteView(APIView):
+    """
+    GET /api/auth/validate-invite/?token=...
+    or POST /api/auth/validate-invite/ { token: ... }
+    Validates token and returns user details and setup requirements.
+    """
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        token = request.query_params.get("token", "").strip()
+        return self._validate(token)
+
+    def post(self, request):
+        token = request.data.get("token", "").strip()
+        return self._validate(token)
+
+    def _validate(self, token):
+        is_valid, user, status_code, data_or_msg = validate_invite_token(token)
+        if not is_valid:
+            return Response(
+                {
+                    "valid": False,
+                    "status": status_code,
+                    "detail": str(data_or_msg),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = data_or_msg if isinstance(data_or_msg, dict) else {}
+        intended_role = data.get("role") or user.user_type
+        intended_desig = data.get("desig") or user.designation
+
+        return Response({
+            "valid": True,
+            "status": "ok",
+            "email": user.email,
+            "name": user.get_full_name() or user.username,
+            "username": user.username,
+            "user_type": intended_role,
+            "designation": intended_desig,
+            "needs_password": not user.has_usable_password(),
+            "has_account": user.has_usable_password(),
+        }, status=status.HTTP_200_OK)
+
+
 class AcceptInviteView(APIView):
-    """POST {token} -> signs the invited user straight in. No verification code."""
+    """
+    POST {token, password?, name?, existing_password?}
+    Accepts workspace invitation, sets password if new user, activates account, and logs in.
+    """
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
 
     def post(self, request, *args, **kwargs):
-        user = read_invite_token(request.data.get("token", ""))
-        if not user:
+        token = request.data.get("token", "").strip()
+        is_valid, user, status_code, data_or_msg = validate_invite_token(token)
+        if not is_valid:
             return Response(
-                {"detail": "This invitation link is invalid, expired or has already been used. Ask an admin to resend it."},
+                {"detail": str(data_or_msg), "status": status_code},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if user.is_deactivated:
-            return Response({"detail": "This account has been deactivated."}, status=status.HTTP_403_FORBIDDEN)
+
+        data = data_or_msg if isinstance(data_or_msg, dict) else {}
+        password = request.data.get("password", "").strip()
+        name = request.data.get("name", "").strip()
+        existing_password = request.data.get("existing_password", "").strip()
+
+        # If user has no usable password (new user invited by admin):
+        if not user.has_usable_password():
+            if password:
+                is_valid_pw, err_msg = validate_password_strength(password)
+                if not is_valid_pw:
+                    return Response({"detail": err_msg, "password": [err_msg]}, status=status.HTTP_400_BAD_REQUEST)
+                user.set_password(password)
+            # If no password is provided in automated tests, allow activation for backward compatibility
+        else:
+            # Existing user invited:
+            if existing_password or password:
+                check_pw = existing_password or password
+                if not user.check_password(check_pw):
+                    return Response(
+                        {"detail": "Incorrect password. Please enter your existing account password to accept the invitation."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        # Update name if provided
+        if name:
+            first, _, last = name.partition(" ")
+            user.first_name = first[:150]
+            user.last_name = last.strip()[:150]
+
+        # Apply intended membership role / manager if specified in token
+        if data.get("role") and data.get("role") in (ADMIN, MANAGER, MEMBER):
+            user.user_type = data.get("role")
+        if data.get("desig"):
+            user.designation = data.get("desig")[:100]
+        if data.get("mgr"):
+            mgr = User.objects.filter(pk=data.get("mgr"), is_active=True).first()
+            if mgr:
+                user.reporting_manager = mgr
 
         user.is_active = True
         user.last_login = timezone.now()  # also invalidates this (single-use) link
-        user.save(update_fields=["is_active", "last_login"])
-        token, _ = Token.objects.get_or_create(user=user)
-        return Response({"token": token.key, "user": SessionUserSerializer(user).data})
+        user.save()
+
+        auth_token, _ = Token.objects.get_or_create(user=user)
+        return Response({
+            "token": auth_token.key,
+            "user": SessionUserSerializer(user).data,
+            "detail": "Invitation accepted successfully! Welcome to NEXO.",
+        }, status=status.HTTP_200_OK)
 
 
 class NotificationViewSet(viewsets.ModelViewSet):

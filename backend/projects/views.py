@@ -138,6 +138,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 invited_email=target_user.email,
                 invited_user=target_user.username,
                 invited_by=request.user.get_full_name() or request.user.username,
+                request=request,
+                project_id=project.id,
             )
 
         return Response(ProjectSerializer(project, context={"request": request}).data)

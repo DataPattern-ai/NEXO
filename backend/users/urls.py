@@ -13,6 +13,7 @@ from .views import (
     ResetPasswordView,
     UserListView,
     UserManageView,
+    ValidateInviteView,
     VerifyCodeView,
     VerifyEmailView,
 )
@@ -31,6 +32,7 @@ urlpatterns = [
     path("users/", UserListView.as_view(), name="user-list"),
     path("users/<int:pk>/", UserManageView.as_view(), name="user-manage"),
     path("users/<int:pk>/resend-invite/", ResendInviteView.as_view(), name="user-resend-invite"),
+    path("validate-invite/", ValidateInviteView.as_view(), name="validate-invite"),
     path("accept-invite/", AcceptInviteView.as_view(), name="accept-invite"),
     path("dashboard/", DashboardView.as_view(), name="dashboard"),
     path("", include(router.urls)),

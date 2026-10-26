@@ -5,6 +5,7 @@ from rest_framework.test import APIClient
 
 from projects.models import Project, ProjectMembership
 from users.models import EmailVerificationCode, User
+from users.serializers import UserWithProjectsSerializer
 from users.utils import make_invite_token
 
 LOCMEM = override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
@@ -141,3 +142,72 @@ class TeamManagementTests(TestCase):
         self.assertEqual(self.member.reporting_manager, self.admin)
         r = self.admin_api.patch(f"/api/auth/users/{self.member.pk}/", {"name": "  "}, format="json")
         self.assertEqual(r.status_code, 400)
+
+    def test_validate_invite_endpoint(self):
+        r = self.invite(email="invitee@example.com")
+        self.assertEqual(r.status_code, 201)
+        invitee = User.objects.get(email="invitee@example.com")
+        token = make_invite_token(invitee)
+
+        c = APIClient()
+        # 1. Valid token
+        res = c.get(f"/api/auth/validate-invite/?token={token}")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["valid"])
+        self.assertEqual(res.data["email"], "invitee@example.com")
+        self.assertTrue(res.data["needs_password"])
+
+        # 2. Invalid token
+        res_bad = c.get("/api/auth/validate-invite/?token=invalid-signature-xyz")
+        self.assertEqual(res_bad.status_code, 400)
+        self.assertEqual(res_bad.data["status"], "invalid")
+
+        # 3. Already accepted token
+        c.post("/api/auth/accept-invite/", {"token": token}, format="json")
+        res_used = c.get(f"/api/auth/validate-invite/?token={token}")
+        self.assertEqual(res_used.status_code, 400)
+        self.assertEqual(res_used.data["status"], "already_accepted")
+
+    def test_accept_invite_with_password_setup(self):
+        r = self.invite(email="setup@example.com", name="Sam Setup")
+        self.assertEqual(r.status_code, 201)
+        user = User.objects.get(email="setup@example.com")
+        token = make_invite_token(user)
+
+        c = APIClient()
+        # Weak password fails
+        weak_res = c.post("/api/auth/accept-invite/", {"token": token, "password": "weak"}, format="json")
+        self.assertEqual(weak_res.status_code, 400)
+
+        # Valid password setup
+        ok_res = c.post(
+            "/api/auth/accept-invite/",
+            {"token": token, "password": "StrongPass123!", "name": "Samuel Setup"},
+            format="json",
+        )
+        self.assertEqual(ok_res.status_code, 200)
+        self.assertIn("token", ok_res.data)
+
+        user.refresh_from_db()
+        self.assertTrue(user.check_password("StrongPass123!"))
+        self.assertTrue(user.is_active)
+        self.assertEqual(user.first_name, "Samuel")
+        self.assertFalse(UserWithProjectsSerializer(user).data["invite_pending"])
+
+        # Login with newly created password works
+        login_res = c.post("/api/auth/login/", {"username": "setup@example.com", "password": "StrongPass123!"}, format="json")
+        self.assertEqual(login_res.status_code, 200)
+
+    def test_email_branding_and_url_generation(self):
+        with self.settings(FRONTEND_URL="https://nexo-preview.vercel.app"):
+            r = self.invite(email="branded@example.com")
+            self.assertEqual(r.status_code, 201)
+            self.assertGreater(len(mail.outbox), 0)
+            sent_email = mail.outbox[-1]
+            # Brand display name check
+            self.assertTrue(sent_email.from_email.startswith("NEXO <"))
+            # Correct deployed link check (no localhost)
+            self.assertIn("https://nexo-preview.vercel.app/invite/", sent_email.body)
+            self.assertNotIn("localhost", sent_email.body)
+            self.assertNotIn("jira", sent_email.body.lower())
+

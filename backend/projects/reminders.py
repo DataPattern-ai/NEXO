@@ -18,7 +18,7 @@ from django.utils import timezone
 
 from users.access import has_project_access
 from users.models import Notification
-from users.utils import send_mail_background
+from users.utils import get_default_from_email, get_frontend_url, send_mail_background
 
 from .models import CalendarEntry
 
@@ -58,7 +58,7 @@ def _when_text(entry):
 
 def _link(entry, user):
     """Project calendar for people who can open the project; otherwise their dashboard."""
-    base = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
+    base = get_frontend_url()
     if has_project_access(user, entry.project):
         return f"{base}/projects/{entry.project_id}/board?tab=calendar"
     return f"{base}/dashboard"
@@ -88,7 +88,7 @@ def _send(user, entry, subject, headline, intro):
     </div>"""
     text = f"Hello {name},\n\n{intro}\n\n{kind}: {entry.title}\nWhen: {_when_text(entry)}\n{entry.description}\n\nOpen: {_link(entry, user)}\n\nThe NEXO Team\n"
     try:
-        send_mail_background(subject, text, getattr(settings, "DEFAULT_FROM_EMAIL", None), [user.email], html_message=html)
+        send_mail_background(subject, text, get_default_from_email(), [user.email], html_message=html)
         return True
     except Exception as e:  # noqa: BLE001
         print(f"[Calendar email error]: {e}")

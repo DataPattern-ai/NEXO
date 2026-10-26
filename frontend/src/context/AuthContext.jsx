@@ -41,8 +41,8 @@ export function AuthProvider({ children }) {
   }
 
   // Invitation link: signs the invited user straight in (no verification code).
-  async function acceptInvite(token) {
-    const res = await api.post("/auth/accept-invite/", { token });
+  async function acceptInvite(token, payload = {}) {
+    const res = await api.post("/auth/accept-invite/", { token, ...payload });
     localStorage.setItem("token", res.data.token);
     setUser(res.data.user);
     return res.data;

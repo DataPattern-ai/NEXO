@@ -28,25 +28,122 @@ INVITE_SALT = "nexo-user-invite"
 INVITE_MAX_AGE = 7 * 24 * 3600  # invitation links stay valid for 7 days
 
 
-def make_invite_token(user) -> str:
-    """Signed, single-use token: it embeds last_login, which changes once the invite is accepted."""
-    return signing.dumps(
-        {"u": user.pk, "l": user.last_login.isoformat() if user.last_login else ""},
-        salt=INVITE_SALT,
-    )
+def get_default_from_email() -> str:
+    """
+    Returns a standardized sender address with display name 'NEXO'.
+    E.g. 'NEXO <user@example.com>' or 'NEXO <noreply@nexo.local>'.
+    Ensures the visible display name is consistently 'NEXO' across all notifications.
+    """
+    raw = getattr(settings, "DEFAULT_FROM_EMAIL", "").strip()
+    if not raw:
+        host_user = getattr(settings, "EMAIL_HOST_USER", "").strip()
+        return f"NEXO <{host_user}>" if host_user else "NEXO <noreply@nexo.local>"
+
+    # If raw already has angle brackets, extract address and force display name 'NEXO'
+    if "<" in raw and ">" in raw:
+        addr = raw[raw.find("<") + 1 : raw.find(">")].strip()
+        return f"NEXO <{addr}>"
+    return f"NEXO <{raw}>"
+
+
+def get_frontend_url(request=None) -> str:
+    """
+    Returns the public base URL for frontend links.
+    Priority order:
+    1. Origin / Referer from active HTTP request if valid
+    2. Explicit FRONTEND_URL in settings (configured via env var)
+    3. Auto-detected VERCEL environment variables (VERCEL_PROJECT_PRODUCTION_URL, VERCEL_BRANCH_URL, VERCEL_URL)
+    4. http://localhost:5173 for local development
+    """
+    import os
+    if request is not None:
+        origin = request.headers.get("origin") or request.META.get("HTTP_ORIGIN")
+        if origin and origin.startswith(("http://", "https://")):
+            return origin.rstrip("/")
+        referer = request.headers.get("referer") or request.META.get("HTTP_REFERER")
+        if referer and referer.startswith(("http://", "https://")):
+            from urllib.parse import urlparse
+            p = urlparse(referer)
+            if p.netloc:
+                return f"{p.scheme}://{p.netloc}".rstrip("/")
+
+    configured = getattr(settings, "FRONTEND_URL", "").strip()
+    if configured and not configured.startswith("http://localhost") and not configured.startswith("http://127.0.0.1"):
+        return configured.rstrip("/")
+
+    if os.getenv("VERCEL_PROJECT_PRODUCTION_URL"):
+        return f"https://{os.getenv('VERCEL_PROJECT_PRODUCTION_URL').strip().rstrip('/')}"
+    if os.getenv("VERCEL_BRANCH_URL"):
+        return f"https://{os.getenv('VERCEL_BRANCH_URL').strip().rstrip('/')}"
+    if os.getenv("VERCEL_URL"):
+        return f"https://{os.getenv('VERCEL_URL').strip().rstrip('/')}"
+
+    return configured if configured else "http://localhost:5173"
+
+
+def make_invite_token(user, intended_role=None, manager_id=None, designation=None) -> str:
+    """Signed, single-use token: embeds last_login, password status, and intended membership details."""
+    payload = {
+        "u": user.pk,
+        "email": user.email,
+        "l": user.last_login.isoformat() if user.last_login else "",
+        "has_pw": user.has_usable_password(),
+        "role": intended_role or user.user_type,
+        "mgr": manager_id if manager_id is not None else (user.reporting_manager_id if user.reporting_manager else None),
+        "desig": designation if designation is not None else user.designation,
+    }
+    return signing.dumps(payload, salt=INVITE_SALT)
+
+
+def validate_invite_token(token: str):
+    """
+    Returns (is_valid, user, status_code, message_or_data).
+    Status codes: 'ok', 'expired', 'already_accepted', 'deactivated', 'invalid'.
+    """
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    if not token or not isinstance(token, str):
+        return False, None, "invalid", "This invitation link is invalid."
+
+    try:
+        data = signing.loads(token, salt=INVITE_SALT, max_age=INVITE_MAX_AGE)
+    except signing.SignatureExpired:
+        return False, None, "expired", "This invitation link has expired. Please ask an administrator to resend the invitation."
+    except signing.BadSignature:
+        return False, None, "invalid", "This invitation link is invalid. Please check the URL or contact your administrator."
+
+    user_id = data.get("u")
+    email = data.get("email")
+    user = None
+    if user_id:
+        user = User.objects.filter(pk=user_id).first()
+    elif email:
+        user = User.objects.filter(email__iexact=email).first()
+
+    if not user:
+        return False, None, "invalid", "The invited user account was not found."
+
+    if user.is_deactivated:
+        return False, user, "deactivated", "This account has been deactivated. Please contact an administrator."
+
+    # Single-use check: token embeds last_login timestamp; once accepted, last_login changes
+    expected_login = data.get("l", "")
+    current_login = user.last_login.isoformat() if user.last_login else ""
+    token_had_pw = data.get("has_pw", False)
+
+    if current_login != expected_login:
+        return False, user, "already_accepted", "This invitation has already been accepted. Please log in with your credentials."
+
+    if not token_had_pw and user.has_usable_password():
+        return False, user, "already_accepted", "This invitation has already been accepted. Please log in with your credentials."
+
+    return True, user, "ok", data
 
 
 def read_invite_token(token: str):
     """Returns the user the token was issued for, or None if bad / expired / already used."""
-    from django.contrib.auth import get_user_model
-    try:
-        data = signing.loads(token, salt=INVITE_SALT, max_age=INVITE_MAX_AGE)
-    except signing.BadSignature:
-        return None
-    user = get_user_model().objects.filter(pk=data.get("u")).first()
-    if not user or (user.last_login.isoformat() if user.last_login else "") != data.get("l"):
-        return None
-    return user
+    is_valid, user, status_code, data = validate_invite_token(token)
+    return user if is_valid else None
 
 
 def can_manage_users(user) -> bool:
@@ -55,19 +152,21 @@ def can_manage_users(user) -> bool:
     return can_create_users(user)
 
 
-def send_user_invitation_email(user, invited_by: str = "") -> bool:
-    """Invites a newly added team member; the link signs them straight in (no verification code)."""
-    frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
-    link = f"{frontend_url}/invite/{make_invite_token(user)}"
+def send_user_invitation_email(user, invited_by: str = "", request=None, role: str = None, designation: str = None) -> bool:
+    """Invites a newly added team member; provides a secure link to complete setup and join NEXO."""
+    frontend_url = get_frontend_url(request)
+    token = make_invite_token(user, intended_role=role, designation=designation)
+    link = f"{frontend_url}/invite/{token}"
     name = user.get_full_name() or user.username
     by = invited_by or "A NEXO admin"
-    role_line = f" as {user.designation}" if user.designation else ""
+    active_role = role or user.designation or user.user_type
+    role_line = f" as {active_role}" if active_role else ""
     subject = "NEXO - You have been invited to join the workspace"
     message = f"""Hello {name},
 
 {by} has invited you to join NEXO{role_line}.
 
-Open this link to get started (no verification needed, valid for 7 days):
+Open this link to complete your account setup and get started (valid for 7 days):
 {link}
 
 Best regards,
@@ -75,7 +174,9 @@ The NEXO Team
 """
     html_message = f"""
     <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #DFE1E6; border-radius: 8px; background: #FFFFFF;">
-        <h2 style="color: #0052CC; margin: 0 0 16px 0;">NEXO</h2>
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 20px;">
+            <h2 style="color: #0052CC; margin: 0;">NEXO</h2>
+        </div>
         <h3 style="color: #172B4D; margin-top: 0;">You're invited to join NEXO</h3>
         <p style="color: #42526E; font-size: 14px; line-height: 1.5;">Hello <strong>{name}</strong>,</p>
         <p style="color: #42526E; font-size: 14px; line-height: 1.5;">
@@ -85,11 +186,11 @@ The NEXO Team
             Accept invitation &rarr;
         </a>
         <p style="color: #6B778C; font-size: 12px; margin: 0;">
-            No verification code is needed. This link signs you in directly and expires in 7 days.
+            This invitation link is valid for 7 days. Click the button above to complete your account setup.
         </p>
     </div>
     """
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@NEXO.local")
+    from_email = get_default_from_email()
     try:
         send_mail_background(subject, message, from_email, [user.email], html_message=html_message)
         return True
@@ -176,17 +277,20 @@ def generate_otp_code(length: int = 6) -> str:
     return "".join([str(random.randint(0, 9)) for _ in range(length)])
 
 
-def send_project_invite_email(project_name: str, invited_email: str, invited_user: str = "", invited_by: str = "") -> bool:
+def send_project_invite_email(project_name: str, invited_email: str, invited_user: str = "", invited_by: str = "", request=None, project_id=None) -> bool:
     """Sends a project-invitation email to a newly added team member."""
     subject = f"NEXO - You have been added to {project_name}"
     recipient_name = invited_user or invited_email.split("@")[0]
+    frontend_url = get_frontend_url(request)
+    project_url = f"{frontend_url}/projects/{project_id}/board" if project_id else f"{frontend_url}/projects"
     message = f"""Hello {recipient_name},
 
 You have been added to the project '{project_name}' in NEXO.
 
 Invited by: {invited_by or 'A project admin'}
 
-You can now log in to the app and access the project.
+You can now log in to the app and access the project:
+{project_url}
 
 Best regards,
 The NEXO Team
@@ -208,9 +312,9 @@ The NEXO Team
             Invited by: <strong>{invited_by or 'A project admin'}</strong>
         </p>
         <div style="background: #F4F5F7; border: 2px solid #0052CC; border-radius: 8px; padding: 18px; margin: 24px 0;">
-            <p style="margin: 0; color: #172B4D; font-weight: 600;">
-                You can now log in and access this project.
-            </p>
+            <a href="{project_url}" style="color: #0052CC; font-weight: 700; text-decoration: none;">
+                Open project in NEXO &rarr;
+            </a>
         </div>
         <p style="color: #6B778C; font-size: 12px; margin: 0;">
             Best regards,<br />The NEXO Team
@@ -218,7 +322,7 @@ The NEXO Team
     </div>
     """
 
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@nexo.local")
+    from_email = get_default_from_email()
     try:
         send_mail_background(subject, message, from_email, [invited_email], html_message=html_message)
         return True
@@ -277,7 +381,7 @@ The NEXO Team
     </div>
     """
 
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@nexo.local")
+    from_email = get_default_from_email()
 
     try:
         send_mail(subject, message, from_email, [email], html_message=html_message)
@@ -380,7 +484,7 @@ def send_notification_email(
     _project_h = _esc(str(project_name))
     _vals = {k: _esc(str(v)) for k, v in dict(
         t=issue_type, p=issue_priority, s=issue_status, r=issue_reporter, a=issue_assignee).items() if v}
-    frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
+    frontend_url = get_frontend_url()
     issue_url = (
         f"{frontend_url}/projects/{project_id}/board?issue={issue_id}"
         if project_id and issue_id
@@ -493,101 +597,12 @@ def send_notification_email(
         f"The NEXO Team\n"
     )
 
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@nexo.local")
+    from_email = get_default_from_email()
 
     try:
         send_mail_background(subject, plain_message, from_email, [recipient_email], html_message=html_message)
         return True
     except Exception as e:
         print(f"[NEXO Email Error]: {e}")
-        return False
-    """
-    Sends an email to the user who has been assigned to an issue.
-    """
-    subject = f"[NEXO] You've been assigned to {issue_key}"
-
-    # Build deep link if project_id and issue_id are available
-    frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
-    if project_id and issue_id:
-        issue_url = f"{frontend_url}/projects/{project_id}/board?issue={issue_id}"
-    else:
-        issue_url = f"{frontend_url}/projects"
-
-    message = f"""Hello {assignee_username},
-
-{assigned_by} has assigned you to the following issue:
-
-    Issue  : {issue_key} — {issue_title}
-    Project: {project_name}
-
-Open the issue directly: {issue_url}
-
-Best regards,
-The NEXO Team
-"""
-
-    html_message = f"""
-    <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px;
-                border: 1px solid #DFE1E6; border-radius: 8px; background: #FFFFFF;">
-        <h2 style="color: #0052CC; margin: 0 0 16px 0;">NEXO</h2>
-        <h3 style="color: #172B4D; margin-top: 0;">You've been assigned to an issue</h3>
-        <p style="color: #42526E; font-size: 14px; line-height: 1.6;">
-            <strong>{assigned_by}</strong> assigned you to:
-        </p>
-        <div style="background: #F4F5F7; border-left: 4px solid #0052CC; border-radius: 4px;
-                    padding: 14px 18px; margin: 16px 0;">
-            <div style="font-size: 13px; color: #6B778C; margin-bottom: 4px;">{project_name}</div>
-            <div style="font-size: 16px; font-weight: 700; color: #172B4D;">
-                {issue_key} — {issue_title}
-            </div>
-        </div>
-        <a href="{issue_url}"
-           style="display: inline-block; margin: 8px 0 16px; padding: 10px 22px;
-                  background: linear-gradient(135deg, #0065FF, #0052CC);
-                  color: #FFFFFF; font-weight: 700; font-size: 14px;
-                  border-radius: 7px; text-decoration: none;
-                  box-shadow: 0 2px 8px rgba(0,82,204,0.35);">
-            Open Issue →
-        </a>
-        <hr style="border: none; border-top: 1px solid #EBECF0; margin: 20px 0;" />
-        <p style="color: #8993A4; font-size: 12px; margin: 0;">
-            You received this email because you are a member of <strong>{project_name}</strong>.
-        </p>
-    </div>
-    """
-
-    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@nexo.local")
-
-    try:
-        import ssl
-        import smtplib
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = from_email
-        msg["To"] = assignee_email
-        msg.attach(MIMEText(message, "plain"))
-        msg.attach(MIMEText(html_message, "html"))
-
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-
-        host = getattr(settings, "EMAIL_HOST", "smtp.gmail.com")
-        port = getattr(settings, "EMAIL_PORT", 587)
-        user = getattr(settings, "EMAIL_HOST_USER", "")
-        password = getattr(settings, "EMAIL_HOST_PASSWORD", "")
-
-        with smtplib.SMTP(host, port, timeout=10) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.login(user, password)
-            server.sendmail(from_email, [assignee_email], msg.as_string())
-
-        return True
-    except Exception as e:
-        print(f"[Assignment Email Error]: {e}")
         return False
 

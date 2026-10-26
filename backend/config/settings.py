@@ -78,14 +78,30 @@ MIDDLEWARE = [
 
 AUTH_USER_MODEL = 'users.User'
 
+frontend_url_env = os.getenv('FRONTEND_URL', '').strip()
+if frontend_url_env:
+    if not frontend_url_env.startswith(('http://', 'https://')):
+        frontend_url_env = f"https://{frontend_url_env}"
+    FRONTEND_URL = frontend_url_env.rstrip('/')
+elif os.getenv('VERCEL_PROJECT_PRODUCTION_URL'):
+    FRONTEND_URL = f"https://{os.getenv('VERCEL_PROJECT_PRODUCTION_URL').strip().rstrip('/')}"
+elif os.getenv('VERCEL_BRANCH_URL'):
+    FRONTEND_URL = f"https://{os.getenv('VERCEL_BRANCH_URL').strip().rstrip('/')}"
+elif vercel_host:
+    FRONTEND_URL = f"https://{vercel_host.strip().rstrip('/')}"
+else:
+    FRONTEND_URL = 'http://localhost:5173'
+
+BACKEND_URL = os.getenv('BACKEND_URL', '').strip().rstrip('/')
+
 cors_origins = [
     'http://localhost:5173',
     'http://localhost:3000',
+    'http://127.0.0.1:5173',
     'http://10.169.235.240:5173',
 ]
-frontend_url = os.getenv('FRONTEND_URL')
-if frontend_url:
-    cors_origins.append(frontend_url)
+if FRONTEND_URL:
+    cors_origins.append(FRONTEND_URL)
 
 CORS_ALLOWED_ORIGINS = list(dict.fromkeys(cors_origins))
 CORS_ALLOWED_ORIGIN_REGEXES = [r'^https://.*\.vercel\.app$']
@@ -101,8 +117,8 @@ CSRF_TRUSTED_ORIGINS = [
     'https://*.vercel.app',
     'https://*.now.sh',
 ]
-if frontend_url:
-    CSRF_TRUSTED_ORIGINS.append(frontend_url)
+if FRONTEND_URL and FRONTEND_URL.startswith(('http://', 'https://')):
+    CSRF_TRUSTED_ORIGINS.append(FRONTEND_URL)
 if vercel_host:
     CSRF_TRUSTED_ORIGINS.append(f'https://{vercel_host}')
 CSRF_TRUSTED_ORIGINS = list(dict.fromkeys(CSRF_TRUSTED_ORIGINS))
@@ -209,7 +225,6 @@ load_dotenv(BASE_DIR / '.env')
 
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
-FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
 
 # Send notification emails in the background so saving never waits on the mail server.
 # (Off for tests, and by default on Vercel where a request's threads are cut off when it ends.)
@@ -221,15 +236,16 @@ REMINDER_DEFAULT_HOUR = int(os.getenv('REMINDER_DEFAULT_HOUR', 9))     # entries
 REMINDER_SCHEDULER = os.getenv('REMINDER_SCHEDULER', '1') == '1'       # in-process checker (not for serverless)
 CRON_SECRET = os.getenv('CRON_SECRET', '')                             # protects GET /api/cron/reminders/
 
+default_from = os.getenv('DEFAULT_FROM_EMAIL', '').strip()
 if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD:
     EMAIL_BACKEND = 'users.email_backend.CertifiSMTPEmailBackend'
     EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
     EMAIL_PORT = int(os.getenv('EMAIL_PORT', 587))
     EMAIL_USE_TLS = True
-    DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', f'NEXO <{EMAIL_HOST_USER}>')
+    DEFAULT_FROM_EMAIL = default_from or f'NEXO <{EMAIL_HOST_USER}>'
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-    DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'NEXO <noreply@nexo.local>')
+    DEFAULT_FROM_EMAIL = default_from or 'NEXO <noreply@nexo.local>'
 
 
 # AI & PMO Intelligence Configuration
