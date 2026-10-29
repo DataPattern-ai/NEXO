@@ -1643,6 +1643,15 @@ def parse_uploaded_file(file_obj, filename: str = "") -> ParsedDocument:
     """Entrypoint to parse uploaded file or text."""
     name = (filename or getattr(file_obj, "name", "") or "").lower()
 
+    if hasattr(file_obj, "open"):
+        try:
+            if hasattr(file_obj, "closed") and file_obj.closed:
+                file_obj.open("rb")
+            elif not hasattr(file_obj, "closed"):
+                file_obj.open("rb")
+        except Exception:
+            pass
+
     if hasattr(file_obj, "seek"):
         try:
             file_obj.seek(0)
@@ -1650,7 +1659,14 @@ def parse_uploaded_file(file_obj, filename: str = "") -> ParsedDocument:
             pass
 
     if hasattr(file_obj, "read"):
-        content_bytes = file_obj.read()
+        try:
+            content_bytes = file_obj.read()
+        except ValueError:
+            if hasattr(file_obj, "open"):
+                file_obj.open("rb")
+                content_bytes = file_obj.read()
+            else:
+                raise
         if hasattr(file_obj, "seek"):
             try:
                 file_obj.seek(0)

@@ -18,9 +18,11 @@ export default function InviteAccept() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   // Form fields for existing user acceptance
   const [existingPassword, setExistingPassword] = useState("");
+  const [showExistingPassword, setShowExistingPassword] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
@@ -50,7 +52,9 @@ export default function InviteAccept() {
         if (!isMounted) return;
         const resp = err?.response?.data;
         const status = resp?.status || "invalid";
-        const detail = resp?.detail || "This invitation link is invalid or expired. Please ask an administrator to resend it.";
+        const detail =
+          resp?.detail ||
+          "This invitation link is invalid or expired. Please ask an administrator to resend it.";
         setInviteStatus(status);
         setErrorMessage(detail);
         setValidating(false);
@@ -174,8 +178,18 @@ export default function InviteAccept() {
 
             {/* State 1: Validating token */}
             {validating && (
-              <div style={{ textAlign: "center", padding: "36px 12px" }}>
-                <div className="jira-auth-main-subtitle" style={{ fontSize: 15, color: "#42526E" }}>
+              <div style={{ textAlign: "center", padding: "40px 12px" }}>
+                <div
+                  className="jira-btn-spinner"
+                  style={{
+                    margin: "0 auto 16px",
+                    width: 28,
+                    height: 28,
+                    borderTopColor: "#0052CC",
+                    borderColor: "rgba(0, 82, 204, 0.2)",
+                  }}
+                ></div>
+                <div className="jira-auth-main-subtitle" style={{ fontSize: 14, color: "#42526E" }}>
                   Validating your invitation link…
                 </div>
               </div>
@@ -212,9 +226,10 @@ export default function InviteAccept() {
                     to="/login"
                     className="jira-auth-submit-btn"
                     style={{
-                      display: "inline-block",
+                      display: "inline-flex",
                       textDecoration: "none",
-                      textAlign: "center",
+                      alignItems: "center",
+                      justifyContent: "center",
                       padding: "11px 24px",
                     }}
                   >
@@ -239,98 +254,199 @@ export default function InviteAccept() {
 
                 {formError && (
                   <div className="jira-auth-alert-error" style={{ marginBottom: 16 }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <line x1="12" y1="8" x2="12"></line>
+                      <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                    </svg>
                     <div className="jira-auth-alert-msg">{formError}</div>
                   </div>
                 )}
 
                 <form onSubmit={handleNewUserSubmit} className="jira-auth-form">
                   {/* Email (Read-only) */}
-                  <div className="jira-auth-input-group">
-                    <label className="jira-auth-label">
-                      Email Address <span style={{ color: "#6B778C", fontSize: 12 }}>(fixed)</span>
-                    </label>
-                    <div className="jira-auth-input-box" style={{ background: "#F4F5F7" }}>
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="#6B778C"
-                        strokeWidth="2"
-                        style={{ marginRight: 8 }}
-                      >
-                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                      </svg>
+                  <div className="jira-form-group">
+                    <div className="jira-form-label-row">
+                      <label className="jira-form-label" htmlFor="invite-email">
+                        Email Address <span style={{ color: "#6B778C", fontSize: 11, fontWeight: "normal" }}>(assigned)</span>
+                      </label>
+                    </div>
+                    <div className="jira-input-wrapper">
+                      <span className="jira-input-icon">
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                          <polyline points="22,6 12,13 2,6" />
+                        </svg>
+                      </span>
                       <input
+                        id="invite-email"
                         type="email"
-                        className="jira-auth-input"
+                        className="jira-form-input"
                         value={inviteData.email}
                         disabled
-                        style={{ color: "#5E6C84", cursor: "not-allowed" }}
+                        readOnly
                       />
                     </div>
+                    <span style={{ fontSize: 11.5, color: "#6B778C", marginTop: 2 }}>
+                      This invitation is locked to this email address.
+                    </span>
                   </div>
 
                   {/* Full Name */}
-                  <div className="jira-auth-input-group">
-                    <label className="jira-auth-label">Full Name</label>
-                    <div className="jira-auth-input-box">
+                  <div className="jira-form-group">
+                    <label className="jira-form-label" htmlFor="invite-fullname">
+                      Full Name <span style={{ color: "#DE350B" }}>*</span>
+                    </label>
+                    <div className="jira-input-wrapper">
+                      <span className="jira-input-icon">
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                          <circle cx="12" cy="7" r="4" />
+                        </svg>
+                      </span>
                       <input
+                        id="invite-fullname"
                         type="text"
-                        className="jira-auth-input"
+                        className="jira-form-input"
                         placeholder="e.g. Jane Doe"
                         value={fullName}
-                        onChange={(e) => setFullName(e.target.value)}
+                        onChange={(e) => {
+                          setFullName(e.target.value);
+                          if (formError) setFormError("");
+                        }}
                         required
                       />
                     </div>
                   </div>
 
                   {/* Password */}
-                  <div className="jira-auth-input-group">
-                    <label className="jira-auth-label">Create Password</label>
-                    <div className="jira-auth-input-box" style={{ position: "relative" }}>
+                  <div className="jira-form-group">
+                    <label className="jira-form-label" htmlFor="invite-password">
+                      Create Password <span style={{ color: "#DE350B" }}>*</span>
+                    </label>
+                    <div className="jira-input-wrapper">
+                      <span className="jira-input-icon">
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        </svg>
+                      </span>
                       <input
+                        id="invite-password"
                         type={showPassword ? "text" : "password"}
-                        className="jira-auth-input"
+                        className="jira-form-input"
                         placeholder="At least 8 characters"
                         value={password}
-                        onChange={(e) => setPassword(e.target.value)}
+                        onChange={(e) => {
+                          setPassword(e.target.value);
+                          if (formError) setFormError("");
+                        }}
+                        autoComplete="new-password"
                         required
                       />
                       <button
                         type="button"
+                        className="jira-input-action-btn"
                         onClick={() => setShowPassword(!showPassword)}
-                        style={{
-                          background: "none",
-                          border: "none",
-                          cursor: "pointer",
-                          padding: 4,
-                          color: "#6B778C",
-                          fontSize: 12,
-                        }}
+                        title={showPassword ? "Hide password" : "Show password"}
                       >
-                        {showPassword ? "Hide" : "Show"}
+                        {showPassword ? (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                            <line x1="1" y1="1" x2="23" y2="23"></line>
+                          </svg>
+                        ) : (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                          </svg>
+                        )}
                       </button>
                     </div>
-                    <span style={{ fontSize: 11, color: "#6B778C", marginTop: 4, display: "block" }}>
+                    <span style={{ fontSize: 11.5, color: "#6B778C", marginTop: 2 }}>
                       Must have at least 8 characters, 1 uppercase letter (A-Z), and 1 digit (0-9).
                     </span>
                   </div>
 
                   {/* Confirm Password */}
-                  <div className="jira-auth-input-group">
-                    <label className="jira-auth-label">Confirm Password</label>
-                    <div className="jira-auth-input-box">
+                  <div className="jira-form-group">
+                    <label className="jira-form-label" htmlFor="invite-confirm-password">
+                      Confirm Password <span style={{ color: "#DE350B" }}>*</span>
+                    </label>
+                    <div className="jira-input-wrapper">
+                      <span className="jira-input-icon">
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        </svg>
+                      </span>
                       <input
-                        type={showPassword ? "text" : "password"}
-                        className="jira-auth-input"
+                        id="invite-confirm-password"
+                        type={showConfirmPassword ? "text" : "password"}
+                        className="jira-form-input"
                         placeholder="Re-enter your password"
                         value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        onChange={(e) => {
+                          setConfirmPassword(e.target.value);
+                          if (formError) setFormError("");
+                        }}
+                        autoComplete="new-password"
                         required
                       />
+                      <button
+                        type="button"
+                        className="jira-input-action-btn"
+                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        title={showConfirmPassword ? "Hide password" : "Show password"}
+                      >
+                        {showConfirmPassword ? (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                            <line x1="1" y1="1" x2="23" y2="23"></line>
+                          </svg>
+                        ) : (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                          </svg>
+                        )}
+                      </button>
                     </div>
                   </div>
 
@@ -338,9 +454,16 @@ export default function InviteAccept() {
                     type="submit"
                     className="jira-auth-submit-btn"
                     disabled={submitting}
-                    style={{ marginTop: 12 }}
+                    style={{ marginTop: 8 }}
                   >
-                    {submitting ? "Activating account…" : "Complete Setup & Join Workspace →"}
+                    {submitting ? (
+                      <span className="jira-btn-spinner-wrap">
+                        <span className="jira-btn-spinner"></span>
+                        Activating account…
+                      </span>
+                    ) : (
+                      <span>Complete Setup & Join Workspace &rarr;</span>
+                    )}
                   </button>
                 </form>
               </div>
@@ -361,6 +484,11 @@ export default function InviteAccept() {
 
                 {formError && (
                   <div className="jira-auth-alert-error" style={{ marginBottom: 16 }}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <line x1="12" y1="8" x2="12"></line>
+                      <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                    </svg>
                     <div className="jira-auth-alert-msg">{formError}</div>
                   </div>
                 )}
@@ -371,10 +499,11 @@ export default function InviteAccept() {
                       style={{
                         background: "#EAE6FF",
                         color: "#403294",
-                        padding: "12px 16px",
+                        padding: "14px 18px",
                         borderRadius: "8px",
-                        fontSize: 13,
+                        fontSize: 13.5,
                         marginBottom: 20,
+                        lineHeight: 1.5,
                       }}
                     >
                       Currently signed in as <strong>{currentUser.email}</strong>.
@@ -385,35 +514,100 @@ export default function InviteAccept() {
                       onClick={handleExistingUserSubmit}
                       disabled={submitting}
                     >
-                      {submitting ? "Accepting invitation…" : "Accept Invitation & Continue →"}
+                      {submitting ? (
+                        <span className="jira-btn-spinner-wrap">
+                          <span className="jira-btn-spinner"></span>
+                          Accepting invitation…
+                        </span>
+                      ) : (
+                        <span>Accept Invitation & Continue &rarr;</span>
+                      )}
                     </button>
                   </div>
                 ) : (
                   <form onSubmit={handleExistingUserSubmit} className="jira-auth-form">
-                    <div className="jira-auth-input-group">
-                      <label className="jira-auth-label">Account Email</label>
-                      <div className="jira-auth-input-box" style={{ background: "#F4F5F7" }}>
+                    <div className="jira-form-group">
+                      <label className="jira-form-label" htmlFor="existing-email">
+                        Account Email
+                      </label>
+                      <div className="jira-input-wrapper">
+                        <span className="jira-input-icon">
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                            <polyline points="22,6 12,13 2,6" />
+                          </svg>
+                        </span>
                         <input
+                          id="existing-email"
                           type="email"
-                          className="jira-auth-input"
+                          className="jira-form-input"
                           value={inviteData.email}
                           disabled
-                          style={{ color: "#5E6C84", cursor: "not-allowed" }}
+                          readOnly
                         />
                       </div>
                     </div>
 
-                    <div className="jira-auth-input-group">
-                      <label className="jira-auth-label">Account Password</label>
-                      <div className="jira-auth-input-box">
+                    <div className="jira-form-group">
+                      <label className="jira-form-label" htmlFor="existing-password">
+                        Account Password <span style={{ color: "#DE350B" }}>*</span>
+                      </label>
+                      <div className="jira-input-wrapper">
+                        <span className="jira-input-icon">
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                          </svg>
+                        </span>
                         <input
-                          type="password"
-                          className="jira-auth-input"
+                          id="existing-password"
+                          type={showExistingPassword ? "text" : "password"}
+                          className="jira-form-input"
                           placeholder="Enter your password to verify"
                           value={existingPassword}
-                          onChange={(e) => setExistingPassword(e.target.value)}
+                          onChange={(e) => {
+                            setExistingPassword(e.target.value);
+                            if (formError) setFormError("");
+                          }}
+                          autoComplete="current-password"
                           required
                         />
+                        <button
+                          type="button"
+                          className="jira-input-action-btn"
+                          onClick={() => setShowExistingPassword(!showExistingPassword)}
+                          title={showExistingPassword ? "Hide password" : "Show password"}
+                        >
+                          {showExistingPassword ? (
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                              <line x1="1" y1="1" x2="23" y2="23"></line>
+                            </svg>
+                          ) : (
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8z"></path>
+                              <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                          )}
+                        </button>
                       </div>
                     </div>
 
@@ -421,9 +615,16 @@ export default function InviteAccept() {
                       type="submit"
                       className="jira-auth-submit-btn"
                       disabled={submitting}
-                      style={{ marginTop: 12 }}
+                      style={{ marginTop: 8 }}
                     >
-                      {submitting ? "Verifying & Accepting…" : "Sign In & Accept Invitation →"}
+                      {submitting ? (
+                        <span className="jira-btn-spinner-wrap">
+                          <span className="jira-btn-spinner"></span>
+                          Verifying & Accepting…
+                        </span>
+                      ) : (
+                        <span>Sign In & Accept Invitation &rarr;</span>
+                      )}
                     </button>
 
                     <div style={{ textAlign: "center", marginTop: 16 }}>

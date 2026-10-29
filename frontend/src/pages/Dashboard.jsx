@@ -191,6 +191,12 @@ function UploadDocModal({ isOpen, onClose, projectId, onUploaded }) {
       alert("Please choose a file or enter document content.");
       return;
     }
+
+    if (file && file.size > 4.5 * 1024 * 1024) {
+      alert(`"${file.name}" (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the 4.5 MB serverless upload limit. Please select a smaller file.`);
+      return;
+    }
+
     setUploading(true);
     const formData = new FormData();
     if (file) formData.append("file", file);
@@ -199,9 +205,7 @@ function UploadDocModal({ isOpen, onClose, projectId, onUploaded }) {
     if (content.trim()) formData.append("content", content.trim());
 
     try {
-      const res = await api.post(`/projects/${projectId}/upload_doc/`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const res = await api.post(`/projects/${projectId}/upload_doc/`, formData);
       onUploaded(res.data);
       onClose();
     } catch (err) {

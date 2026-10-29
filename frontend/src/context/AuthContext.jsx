@@ -20,6 +20,14 @@ export function AuthProvider({ children }) {
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      setUser(null);
+    };
+    window.addEventListener("nexo:auth-expired", handleAuthExpired);
+    return () => window.removeEventListener("nexo:auth-expired", handleAuthExpired);
+  }, []);
+
   async function login(email, password) {
     const res = await api.post("/auth/login/", { username: email, password });
     localStorage.setItem("token", res.data.token);

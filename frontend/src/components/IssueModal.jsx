@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { userLabel } from "../utils/userLabel";
-import api from "../api/client";
+import api, { downloadFile } from "../api/client";
 import MentionTextarea from "./MentionTextarea";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { FileIcon, AttachmentIcon, IssueTypeIcon, PriorityIcon } from "./Icons";
@@ -138,16 +138,14 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
     setUploadingFile(true);
     try {
       for (const file of files) {
-        if (file.size > 10 * 1024 * 1024) {
-          setUploadError(`"${file.name}" exceeds the 10 MB limit.`);
+        if (file.size > 4.5 * 1024 * 1024) {
+          setUploadError(`"${file.name}" exceeds the 4.5 MB serverless limit.`);
           continue;
         }
         const formData = new FormData();
         formData.append("file", file);
         formData.append("issue", issueId);
-        await api.post("/attachments/", formData, {
-          headers: { "Content-Type": "multipart/form-data" },
-        });
+        await api.post("/attachments/", formData);
       }
       load();
     } catch (err) {
@@ -155,6 +153,15 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
     } finally {
       setUploadingFile(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleDownloadAttachment(att) {
+    if (!att?.url) return;
+    try {
+      await downloadFile(att.url, att.filename || "attachment");
+    } catch (err) {
+      alert("Failed to download attachment: " + (err?.response?.data?.error || err.message));
     }
   }
 
@@ -436,15 +443,24 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                     <div key={att.id} className="jira-attachment-row">
                       <span className="jira-attachment-icon">{getFileIcon(att.content_type)}</span>
                       <div className="jira-attachment-info">
-                        <a
-                          href={att.url}
-                          target="_blank"
-                          rel="noreferrer"
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadAttachment(att)}
                           className="jira-attachment-name"
-                          title={att.filename}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            padding: 0,
+                            color: "#0052CC",
+                            fontWeight: 500,
+                            cursor: "pointer",
+                            textAlign: "left",
+                            textDecoration: "underline",
+                          }}
+                          title={`Download ${att.filename}`}
                         >
                           {att.filename}
-                        </a>
+                        </button>
                         <span className="jira-attachment-meta">
                           {formatBytes(att.file_size)} · {userLabel(att.uploaded_by)} · {new Date(att.uploaded_at).toLocaleDateString()}
                         </span>

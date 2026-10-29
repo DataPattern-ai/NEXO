@@ -12,8 +12,11 @@ from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
 from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.authentication import SessionAuthentication
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
+
+from users.authentication import TokenAuthFromHeaderOrQuery
 
 from issues.models import ActivityLog, Issue
 from users.access import (
@@ -195,7 +198,12 @@ class ProjectViewSet(viewsets.ModelViewSet):
         data = generate_project_intelligence(project, force_refresh=True)
         return Response(data)
 
-    @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])
+    @action(
+        detail=True,
+        methods=["post"],
+        parser_classes=[MultiPartParser, FormParser],
+        permission_classes=[permissions.IsAuthenticated, IsProjectMemberOrAbove],
+    )
     def upload_doc(self, request, pk=None):
         """
         POST /api/projects/<id>/upload_doc/
@@ -204,6 +212,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
         Supports automatic deduplication (same file re-uploaded) and revision updates.
         """
         project = self.get_object()
+        if not is_project_admin(request.user, project):
+            raise PermissionDenied("Only project admins and managers can upload project documents.")
+
         file_obj = request.FILES.get("file")
         title = request.data.get("title")
         content = request.data.get("content", "")
@@ -211,6 +222,22 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
         if not file_obj and not content:
             return Response({"error": "Either file or content is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if file_obj:
+            # Serverless execution limit is 4.5 MB on Vercel
+            max_mb = 4.5 if os.getenv("VERCEL") else 25.0
+            if file_obj.size > int(max_mb * 1024 * 1024):
+                return Response(
+                    {"error": f"File size ({round(file_obj.size / (1024 * 1024), 1)} MB) exceeds the {max_mb} MB limit."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            ext = os.path.splitext(file_obj.name)[1].lower()
+            allowed = (".xlsx", ".xls", ".docx", ".pdf", ".md", ".txt")
+            if ext not in allowed:
+                return Response(
+                    {"error": f"Unsupported file format '{ext}'. Supported formats: Excel (.xlsx, .xls), Word (.docx), PDF (.pdf), Markdown (.md), and Text (.txt)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         if not title:
             if file_obj:
@@ -873,6 +900,62 @@ class ProjectDocViewSet(viewsets.ModelViewSet):
         manifest_data["doc_id"] = doc.id
         manifest_data["doc_title"] = doc.title
         return Response(manifest_data)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        authentication_classes=[TokenAuthFromHeaderOrQuery, SessionAuthentication],
+        permission_classes=[permissions.IsAuthenticated],
+    )
+    def download(self, request, pk=None):
+        """
+        GET /api/docs/<id>/download/
+        Streams the project document file with project-level permission checking.
+        Supports query parameter token (?token=...) for direct browser download links.
+        """
+        user = request.user
+        if not user or not user.is_authenticated:
+            token_key = request.query_params.get("token") or request.query_params.get("auth_token")
+            if token_key:
+                from rest_framework.authtoken.models import Token
+                try:
+                    token_obj = Token.objects.select_related("user").get(key=token_key)
+                    request.user = token_obj.user
+                    user = token_obj.user
+                except Token.DoesNotExist:
+                    return Response({"error": "Invalid token."}, status=status.HTTP_401_UNAUTHORIZED)
+            else:
+                return Response({"error": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        doc = ProjectDoc.objects.filter(pk=pk).select_related("project").first()
+        if not doc:
+            return Response({"error": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not has_project_access(user, doc.project):
+            raise PermissionDenied("You do not have permission to view or download this document.")
+
+        if not doc.file:
+            return Response({"error": "No file attached to this document."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            if hasattr(doc.file, "url") and (doc.file.url.startswith("http://") or doc.file.url.startswith("https://")):
+                from django.http import HttpResponseRedirect
+                return HttpResponseRedirect(doc.file.url)
+
+            import mimetypes
+            import os
+            from django.http import FileResponse
+
+            content_type, _ = mimetypes.guess_type(doc.file.name)
+            filename = os.path.basename(doc.file.name)
+            return FileResponse(
+                doc.file.open("rb"),
+                as_attachment=True,
+                filename=filename,
+                content_type=content_type or "application/octet-stream"
+            )
+        except Exception as e:
+            return Response({"error": f"Failed to retrieve file: {str(e)}"}, status=status.HTTP_404_NOT_FOUND)
 
 
 class ProjectSignalViewSet(viewsets.ModelViewSet):

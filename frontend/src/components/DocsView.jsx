@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { userLabel } from "../utils/userLabel";
-import api from "../api/client";
+import api, { downloadFile } from "../api/client";
 
 const TEMPLATES = [
   {
@@ -210,12 +210,35 @@ export default function DocsView({ project, currentUser }) {
     }
   }
 
+  const [downloadingDoc, setDownloadingDoc] = useState(false);
+
+  async function handleDownloadDoc(doc) {
+    if (!doc?.file_url) return;
+    setDownloadingDoc(true);
+    try {
+      await downloadFile(doc.file_url, doc.title || "document");
+    } catch (e) {
+      alert("Failed to download document: " + (e?.response?.data?.error || e.message));
+    } finally {
+      setDownloadingDoc(false);
+    }
+  }
+
   async function handleUploadDoc(e) {
     e.preventDefault();
     if (!uploadFile) {
       alert("Please select a file to upload.");
       return;
     }
+
+    // Client-side file size validation for serverless upload limit
+    if (uploadFile.size > 4.5 * 1024 * 1024) {
+      alert(
+        `"${uploadFile.name}" (${(uploadFile.size / (1024 * 1024)).toFixed(1)} MB) exceeds the 4.5 MB serverless upload limit. Please select a smaller file or reduce its size.`
+      );
+      return;
+    }
+
     setUploading(true);
     const formData = new FormData();
     formData.append("file", uploadFile);
@@ -225,9 +248,8 @@ export default function DocsView({ project, currentUser }) {
     formData.append("template_type", uploadTemplateType);
 
     try {
-      const res = await api.post(`/projects/${project.id}/upload_doc/`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      // Do not manually set Content-Type so Axios/browser computes the multipart boundary correctly
+      const res = await api.post(`/projects/${project.id}/upload_doc/`, formData);
       const newDoc = res.data?.doc;
       if (newDoc) {
         setDocs((prev) => {
@@ -491,17 +513,17 @@ export default function DocsView({ project, currentUser }) {
               <div className="jira-docs-article-actions" style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 {/* Download File Button */}
                 {selectedDoc.file_url && (
-                  <a
-                    href={selectedDoc.file_url}
-                    target="_blank"
-                    rel="noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadDoc(selectedDoc)}
+                    disabled={downloadingDoc}
                     className="jira-btn-secondary-sm"
-                    style={{ display: "inline-flex", alignItems: "center", gap: 5, textDecoration: "none" }}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer" }}
                     title="Download original file attachment"
                   >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    Download File
-                  </a>
+                    {downloadingDoc ? "Downloading…" : "Download File"}
+                  </button>
                 )}
 
                 {/* Re-extract PMO Signals */}
@@ -672,9 +694,15 @@ export default function DocsView({ project, currentUser }) {
                           Parsed from uploaded file <strong>{selectedDoc.title}</strong> ({formatFileSize(selectedDoc.file_size)})
                         </span>
                       </div>
-                      <a href={selectedDoc.file_url} target="_blank" rel="noreferrer" className="jira-btn-secondary-sm">
-                        Download Original
-                      </a>
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadDoc(selectedDoc)}
+                        disabled={downloadingDoc}
+                        className="jira-btn-secondary-sm"
+                        style={{ cursor: "pointer" }}
+                      >
+                        {downloadingDoc ? "Downloading…" : "Download Original"}
+                      </button>
                     </div>
                   )}
                   <div className="jira-markdown-renderer">

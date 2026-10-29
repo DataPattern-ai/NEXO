@@ -9,6 +9,9 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(() => {
+    return new URLSearchParams(window.location.search).get("expired") === "1";
+  });
 
   // Forgot password modal state
   const [showForgotModal, setShowForgotModal] = useState(false);
@@ -52,11 +55,13 @@ export default function Login() {
       setError("Please enter both email and password");
       return;
     }
+    setSessionExpired(false);
     setError("");
     setLoading(true);
     try {
       await login(email.trim().toLowerCase(), password);
-      navigate("/dashboard");
+      const nextParam = new URLSearchParams(window.location.search).get("next");
+      navigate(nextParam ? decodeURIComponent(nextParam) : "/dashboard");
     } catch (err) {
       // Account exists but email not verified yet
       if (err?.response?.status === 403 && err?.response?.data?.unverified) {
@@ -255,6 +260,31 @@ export default function Login() {
                 Enter your credentials to access your NEXO projects and team boards.
               </p>
             </div>
+
+            {sessionExpired && !error && (
+              <div
+                className="jira-auth-alert-warning"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "10px 14px",
+                  borderRadius: 6,
+                  backgroundColor: "#FFFAE6",
+                  border: "1px solid #FFE380",
+                  color: "#172B4D",
+                  fontSize: 13,
+                  marginBottom: 16,
+                }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FFAB00" strokeWidth="2.5" style={{ flexShrink: 0 }}>
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                  <line x1="12" y1="9" x2="12" y2="13"></line>
+                  <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                </svg>
+                <div style={{ flex: 1 }}>Your session has expired. Please sign in again to continue.</div>
+              </div>
+            )}
 
             {error && (
               <div className="jira-auth-alert-error">

@@ -1,9 +1,14 @@
 import re
 
 from django.db.models import Q
-from rest_framework import permissions, viewsets
+from rest_framework import permissions, status, viewsets
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.response import Response
+
+from users.authentication import TokenAuthFromHeaderOrQuery
 
 from projects.permissions import IsProjectMemberOrAbove
 from users.access import (
@@ -441,6 +446,11 @@ class AttachmentViewSet(viewsets.ModelViewSet):
         issue = serializer.validated_data["issue"]
         if not has_project_access(self.request.user, issue.project):
             raise PermissionDenied("You are not a member of this project.")
+        file_obj = self.request.FILES.get("file")
+        if file_obj:
+            max_mb = 4.5 if os.getenv("VERCEL") else 25.0
+            if file_obj.size > int(max_mb * 1024 * 1024):
+                raise ValidationError(f"File exceeds {max_mb} MB upload limit.")
         serializer.save(uploaded_by=self.request.user)
 
     def perform_destroy(self, instance):
@@ -449,3 +459,59 @@ class AttachmentViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("You can only delete your own attachments.")
         instance.file.delete(save=False)  # remove file from disk
         instance.delete()
+
+    @action(
+        detail=True,
+        methods=["get"],
+        authentication_classes=[TokenAuthFromHeaderOrQuery, SessionAuthentication],
+        permission_classes=[permissions.IsAuthenticated],
+    )
+    def download(self, request, pk=None):
+        """
+        GET /api/attachments/<id>/download/
+        Streams the issue attachment file with project-level permission checking.
+        Supports query parameter token (?token=...) for direct browser download links.
+        """
+        user = request.user
+        if not user or not user.is_authenticated:
+            token_key = request.query_params.get("token") or request.query_params.get("auth_token")
+            if token_key:
+                from rest_framework.authtoken.models import Token
+                try:
+                    token_obj = Token.objects.select_related("user").get(key=token_key)
+                    request.user = token_obj.user
+                    user = token_obj.user
+                except Token.DoesNotExist:
+                    return Response({"error": "Invalid token."}, status=status.HTTP_401_UNAUTHORIZED)
+            else:
+                return Response({"error": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        attachment = IssueAttachment.objects.filter(pk=pk).select_related("issue__project").first()
+        if not attachment:
+            return Response({"error": "Attachment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not has_project_access(user, attachment.issue.project):
+            raise PermissionDenied("You do not have permission to view or download this attachment.")
+
+        if not attachment.file:
+            return Response({"error": "No file attached."}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            if hasattr(attachment.file, "url") and (attachment.file.url.startswith("http://") or attachment.file.url.startswith("https://")):
+                from django.http import HttpResponseRedirect
+                return HttpResponseRedirect(attachment.file.url)
+
+            import mimetypes
+            import os
+            from django.http import FileResponse
+
+            content_type = attachment.content_type or mimetypes.guess_type(attachment.file.name)[0] or "application/octet-stream"
+            filename = attachment.filename or os.path.basename(attachment.file.name)
+            return FileResponse(
+                attachment.file.open("rb"),
+                as_attachment=True,
+                filename=filename,
+                content_type=content_type
+            )
+        except Exception as e:
+            return Response({"error": f"Failed to retrieve file: {str(e)}"}, status=status.HTTP_404_NOT_FOUND)

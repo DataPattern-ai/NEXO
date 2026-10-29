@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 
 export default function AskAIModal({ isOpen, onClose, project, issues = [] }) {
   const [query, setQuery] = useState("");
@@ -9,6 +9,21 @@ export default function AskAIModal({ isOpen, onClose, project, issues = [] }) {
     },
   ]);
   const [loading, setLoading] = useState(false);
+  const textareaRef = useRef(null);
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`;
+    }
+  }, [query]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -99,17 +114,35 @@ export default function AskAIModal({ isOpen, onClose, project, issues = [] }) {
         </div>
 
         {/* Chat Input */}
-        <div className="jira-ai-chat-input-bar">
-          <input
-            type="text"
+        <div className="jira-ai-chat-input-bar" style={{ alignItems: "flex-end" }}>
+          <textarea
+            ref={textareaRef}
+            rows={1}
             className="jira-input"
-            placeholder="Ask anything about this project, generate tasks, or check blockers..."
+            placeholder="Ask anything about this project, generate tasks, or check blockers... (Shift+Enter for newline)"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSend()}
+            onKeyDown={handleKeyDown}
+            disabled={loading}
             autoFocus
+            style={{
+              flex: 1,
+              resize: "none",
+              minHeight: 38,
+              maxHeight: 120,
+              lineHeight: 1.4,
+              padding: "8px 10px",
+              fontFamily: "inherit",
+              overflowY: "auto",
+              boxSizing: "border-box",
+            }}
           />
-          <button className="jira-btn-primary" onClick={() => handleSend()} disabled={loading}>
+          <button
+            className="jira-btn-primary"
+            onClick={() => handleSend()}
+            disabled={loading || !query.trim()}
+            style={{ height: 38, padding: "0 16px", flexShrink: 0 }}
+          >
             Send
           </button>
         </div>

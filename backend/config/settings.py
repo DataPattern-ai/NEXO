@@ -212,9 +212,47 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [BASE_DIR / 'static_root']
 
+# Default primary key field type
+# https://docs.djangoproject.com/en/6.1/ref/settings/#default-auto-field
+DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
+
 # Media files (user uploads)
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+USE_S3 = os.getenv('USE_S3', 'False').lower() in ('true', '1')
+
+if USE_S3 and os.getenv('AWS_STORAGE_BUCKET_NAME'):
+    try:
+        import storages  # noqa: F401
+        STORAGES = {
+            "default": {
+                "BACKEND": "storages.backends.s3.S3Storage",
+                "OPTIONS": {
+                    "bucket_name": os.getenv("AWS_STORAGE_BUCKET_NAME"),
+                    "endpoint_url": os.getenv("AWS_S3_ENDPOINT_URL") or None,
+                    "access_key": os.getenv("AWS_ACCESS_KEY_ID"),
+                    "secret_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
+                    "region_name": os.getenv("AWS_S3_REGION_NAME", "auto"),
+                    "default_acl": "private",
+                    "querystring_auth": True,
+                    "querystring_expire": 3600,
+                    "file_overwrite": False,
+                },
+            },
+            "staticfiles": {
+                "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage" if not DEBUG else "django.contrib.staticfiles.storage.StaticFilesStorage",
+            },
+        }
+        MEDIA_URL = f"https://{os.getenv('AWS_STORAGE_BUCKET_NAME')}.s3.amazonaws.com/" if not os.getenv('AWS_S3_ENDPOINT_URL') else f"{os.getenv('AWS_S3_ENDPOINT_URL')}/{os.getenv('AWS_STORAGE_BUCKET_NAME')}/"
+    except ImportError:
+        MEDIA_URL = '/media/'
+        MEDIA_ROOT = Path('/tmp/media') if os.getenv('VERCEL') else (BASE_DIR / 'media')
+else:
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = Path('/tmp/media') if os.getenv('VERCEL') else (BASE_DIR / 'media')
+
+try:
+    MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 
 # Email Configuration (Supports Gmail SMTP & Console Fallback)

@@ -43,11 +43,25 @@ class ProjectDocSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj):
         request = self.context.get("request")
-        if obj.file and request:
-            return request.build_absolute_uri(obj.file.url)
-        elif obj.file:
+        if not obj.file:
+            return None
+
+        try:
+            if hasattr(obj.file, "url") and (obj.file.url.startswith("http://") or obj.file.url.startswith("https://")):
+                return obj.file.url
+        except Exception:
+            pass
+
+        from django.urls import reverse
+        try:
+            download_path = reverse("doc-download", kwargs={"pk": obj.pk})
+            if request:
+                return request.build_absolute_uri(download_path)
+            return download_path
+        except Exception:
+            if request:
+                return request.build_absolute_uri(obj.file.url)
             return obj.file.url
-        return None
 
     def get_signals_count(self, obj):
         return obj.signals.count()

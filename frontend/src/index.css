@@ -4588,6 +4588,13 @@ input:checked + .jira-switch-slider:before {
   box-shadow: 0 0 0 3px rgba(0, 82, 204, 0.18);
 }
 
+.jira-form-input:disabled {
+  background: #F4F5F7 !important;
+  color: #6B778C !important;
+  cursor: not-allowed !important;
+  border-color: #DFE1E6 !important;
+}
+
 .jira-input-action-btn {
   position: absolute;
   right: 8px;

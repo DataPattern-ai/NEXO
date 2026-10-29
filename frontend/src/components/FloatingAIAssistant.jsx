@@ -19,12 +19,27 @@ export default function FloatingAIAssistant({
   const [loading, setLoading] = useState(false);
   const [executingIdx, setExecutingIdx] = useState(null);
   const messagesEndRef = useRef(null);
+  const textareaRef = useRef(null);
 
   useEffect(() => {
     if (isOpen) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages, isOpen]);
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`;
+    }
+  }, [query]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
 
   async function handleSend(promptText = null) {
     const textToSend = (promptText || query).trim();
@@ -478,15 +493,18 @@ export default function FloatingAIAssistant({
               padding: "10px 12px",
               borderTop: "1px solid #DFE1E6",
               display: "flex",
+              alignItems: "flex-end",
               gap: 8,
               background: "#FAFBFC",
             }}
           >
-            <input
-              type="text"
-              placeholder="Ask anything or request a task action..."
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              placeholder="Ask anything or request a task action... (Shift+Enter for newline)"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={handleKeyDown}
               disabled={loading}
               style={{
                 flex: 1,
@@ -494,14 +512,23 @@ export default function FloatingAIAssistant({
                 border: "1px solid #DFE1E6",
                 borderRadius: 4,
                 fontSize: 13,
+                fontFamily: "inherit",
+                lineHeight: "1.4",
                 outline: "none",
+                resize: "none",
+                minHeight: 38,
+                maxHeight: 120,
+                overflowY: "auto",
+                boxSizing: "border-box",
+                background: "#FFFFFF",
               }}
             />
             <button
               type="submit"
               disabled={loading || !query.trim()}
               style={{
-                padding: "8px 14px",
+                height: 38,
+                padding: "0 14px",
                 borderRadius: 4,
                 background: query.trim() ? "#0052CC" : "#EBECF0",
                 color: query.trim() ? "#FFFFFF" : "#A5ADBA",
@@ -509,6 +536,10 @@ export default function FloatingAIAssistant({
                 fontWeight: 600,
                 fontSize: 13,
                 cursor: query.trim() ? "pointer" : "default",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
               }}
             >
               Send
