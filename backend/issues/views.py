@@ -1,5 +1,7 @@
+import os
 import re
 
+from django.conf import settings
 from django.db.models import Q
 from rest_framework import permissions, status, viewsets
 from rest_framework.authentication import SessionAuthentication
@@ -448,7 +450,7 @@ class AttachmentViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("You are not a member of this project.")
         file_obj = self.request.FILES.get("file")
         if file_obj:
-            max_mb = 4.5 if os.getenv("VERCEL") else 25.0
+            max_mb = 4.5 if getattr(settings, "IS_SERVERLESS", False) or os.getenv("VERCEL") else 25.0
             if file_obj.size > int(max_mb * 1024 * 1024):
                 raise ValidationError(f"File exceeds {max_mb} MB upload limit.")
         serializer.save(uploaded_by=self.request.user)

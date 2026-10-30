@@ -216,6 +216,14 @@ STATICFILES_DIRS = [BASE_DIR / 'static_root']
 # https://docs.djangoproject.com/en/6.1/ref/settings/#default-auto-field
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
 
+# Serverless / Read-only runtime detection (Vercel, AWS Lambda, or non-writable BASE_DIR)
+IS_SERVERLESS = bool(
+    os.getenv('VERCEL')
+    or os.getenv('VERCEL_URL')
+    or os.getenv('AWS_LAMBDA_FUNCTION_NAME')
+    or not os.access(BASE_DIR, os.W_OK)
+)
+
 # Media files (user uploads)
 USE_S3 = os.getenv('USE_S3', 'False').lower() in ('true', '1')
 
@@ -244,10 +252,10 @@ if USE_S3 and os.getenv('AWS_STORAGE_BUCKET_NAME'):
         MEDIA_URL = f"https://{os.getenv('AWS_STORAGE_BUCKET_NAME')}.s3.amazonaws.com/" if not os.getenv('AWS_S3_ENDPOINT_URL') else f"{os.getenv('AWS_S3_ENDPOINT_URL')}/{os.getenv('AWS_STORAGE_BUCKET_NAME')}/"
     except ImportError:
         MEDIA_URL = '/media/'
-        MEDIA_ROOT = Path('/tmp/media') if os.getenv('VERCEL') else (BASE_DIR / 'media')
+        MEDIA_ROOT = Path('/tmp/media') if IS_SERVERLESS else (BASE_DIR / 'media')
 else:
     MEDIA_URL = '/media/'
-    MEDIA_ROOT = Path('/tmp/media') if os.getenv('VERCEL') else (BASE_DIR / 'media')
+    MEDIA_ROOT = Path('/tmp/media') if IS_SERVERLESS else (BASE_DIR / 'media')
 
 try:
     MEDIA_ROOT.mkdir(parents=True, exist_ok=True)

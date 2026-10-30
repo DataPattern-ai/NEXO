@@ -1,6 +1,7 @@
 import datetime
 import hmac
 import io
+import os
 import re
 
 from django.conf import settings
@@ -225,7 +226,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
         if file_obj:
             # Serverless execution limit is 4.5 MB on Vercel
-            max_mb = 4.5 if os.getenv("VERCEL") else 25.0
+            max_mb = 4.5 if getattr(settings, "IS_SERVERLESS", False) or os.getenv("VERCEL") else 25.0
             if file_obj.size > int(max_mb * 1024 * 1024):
                 return Response(
                     {"error": f"File size ({round(file_obj.size / (1024 * 1024), 1)} MB) exceeds the {max_mb} MB limit."},

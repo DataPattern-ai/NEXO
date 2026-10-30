@@ -21,6 +21,7 @@ class ProductionReliabilityPhase1Tests(TestCase):
             email="owner@nexo.test",
             password="StrongPassword123!",
             is_active=True,
+            user_type="ADMIN",
         )
         self.member = User.objects.create_user(
             username="member_user",
@@ -153,3 +154,37 @@ class ProductionReliabilityPhase1Tests(TestCase):
         self.assertIsNotNone(att_url)
         self.assertIn(f"/api/attachments/{self.attachment.id}/download/", att_url)
         self.assertNotIn("token=", att_url)
+
+    def test_project_upload_doc_success(self):
+        """Project admin can upload a document file to the project without NameError or 500 error."""
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.owner_token.key}")
+        sample_file = SimpleUploadedFile(
+            "roadmap.txt",
+            b"Q1 Roadmap: 1. Launch Alpha feature. 2. Verify Vercel storage.",
+            content_type="text/plain",
+        )
+        response = self.client.post(
+            f"/api/projects/{self.project.id}/upload_doc/",
+            {"file": sample_file, "title": "Roadmap Q1", "template_type": "STATUS"},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIn("doc", response.data)
+        self.assertEqual(response.data["doc"]["title"], "Roadmap Q1")
+        self.assertIn("intelligence", response.data)
+
+    def test_issue_attachment_upload_success(self):
+        """Admin or manager can upload an attachment to an issue without NameError or 500 error."""
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.owner_token.key}")
+        sample_file = SimpleUploadedFile(
+            "screenshot.png",
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+            content_type="image/png",
+        )
+        response = self.client.post(
+            "/api/attachments/",
+            {"file": sample_file, "issue": self.issue.id},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["filename"], "screenshot.png")
